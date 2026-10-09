@@ -10,6 +10,8 @@
 - 已安装 EXE 的本机复验通过：首次证书确认后自动开启，连续两次开关无重复应用协议，settings 逐字节恢复且证书持续受信任；未发送上游模型请求。
 - README 图片为合成数据；真实 Cursor/GPT/Claude/MCP 模型调用闭环仍未验收。
 
+GitHub Windows CI [37953044611](https://github.com/dude1wudv/cursor-sub2api-byok/actions/runs/37953044611) 全部通过，覆盖代码提交 `13c5f4a6220919a876699a1e6b34e753bb54e655`：147 项库测试 + 87 项集成测试，共 234 项；前端检查与原生桌面编译通过。后续仅补充验证文档。
+
 ## v0.2.0 历史验证
 
 v0.2.0，2026-10-09，Windows x64，固定上游 `7ee68c2b7fef66a0e0279273d037d23fbc2f11ad`。
