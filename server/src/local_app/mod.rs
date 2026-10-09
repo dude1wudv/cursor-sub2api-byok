@@ -44,6 +44,7 @@ pub struct CursorHarnessStatus {
     pub platform: &'static str,
     pub ca: CaState,
     pub ca_sha256: Option<String>,
+    pub certificate_consent: bool,
     pub configured_models: usize,
     pub enabled_models: usize,
     pub integration: IntegrationState,
@@ -102,7 +103,7 @@ fn check_target(record: &journal::Record, target: &Path) -> Result<()> {
     Ok(())
 }
 fn restore_ca(record: &journal::Record) -> Result<()> {
-    if record.ca_install_intended && !record.ca_prior_trust {
+    if record.ca_install_intended && !record.ca_prior_trust && !record.ca_persistent_trust {
         CaManager::remove_current_user(&record.ca_der)?;
     }
     Ok(())
@@ -218,6 +219,7 @@ impl CursorHarness {
             platform: std::env::consts::OS,
             ca,
             ca_sha256: self.inner.ca.fingerprint().ok(),
+            certificate_consent: self.inner.ca.consent_accepted().unwrap_or(false),
             configured_models,
             enabled_models: configured_models,
             integration,
@@ -248,6 +250,21 @@ impl CursorHarness {
     pub async fn initialize_ca(&self) -> Result<CursorHarnessStatus> {
         let _guard = self.configuration_guard().await?;
         self.inner.ca.initialize_local()?;
+        self.status().await
+    }
+
+    pub async fn accept_certificate(&self, accepted: bool, version: u32) -> Result<CursorHarnessStatus> {
+        if !accepted || version != 1 { return Err(Error::Config("请阅读并同意当前版本的证书使用说明".into())); }
+        let _guard = self.configuration_guard().await?;
+        self.require_cursor_closed().await?;
+        self.inner.ca.accept_persistent_trust()?;
+        self.status().await
+    }
+    pub async fn uninstall_certificate(&self) -> Result<CursorHarnessStatus> {
+        let _guard = self.inner.transition.lock().await;
+        self.require_cursor_closed().await?;
+        self.restore_transaction().await?;
+        self.inner.ca.uninstall_persistent_trust()?;
         self.status().await
     }
 
@@ -290,6 +307,9 @@ impl CursorHarness {
                 "至少配置一个有效 Sub2API 模型后才能开启接管。".into(),
             ));
         }
+        if !self.inner.ca.consent_accepted()? {
+            return Err(conflict("CERTIFICATE_CONSENT_REQUIRED", "请先阅读并同意证书使用说明，完成一次性证书安装。"));
+        }
         let backend = self
             .inner
             .backend_addr
@@ -300,6 +320,7 @@ impl CursorHarness {
         let ca_der = self.inner.ca.der()?;
         let prior = CaManager::trusted(&ca_der)?;
         let mut record = journal::from_patch(&patch, ca_der, prior)?;
+        record.ca_persistent_trust = true;
         journal::write(&self.inner.journal_path, &record)?;
         let result: Result<()> = async {
             if !prior {

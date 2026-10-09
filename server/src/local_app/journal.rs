@@ -43,6 +43,9 @@ pub struct Record {
     pub ca_sha256: [u8; 32],
     pub ca_prior_trust: bool,
     pub ca_install_intended: bool,
+    /// Old journals still restore their original temporary trust transaction.
+    #[serde(default)]
+    pub ca_persistent_trust: bool,
 }
 
 pub fn path(data_dir: &Path) -> PathBuf {
@@ -70,6 +73,7 @@ pub fn from_patch(patch: &SettingsPatch, ca_der: Vec<u8>, ca_prior_trust: bool) 
         ca_der,
         ca_prior_trust,
         ca_install_intended: !ca_prior_trust,
+        ca_persistent_trust: false,
     })
 }
 

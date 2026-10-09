@@ -25,6 +25,7 @@ const args = ['--data-dir', data, '--cursor-user-data-dir', cursor];
 function ps(command) { return cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', command], { windowsHide:true, encoding:'utf8' }).trim(); }
 function roots() { return JSON.parse(ps("$ErrorActionPreference='Stop'; $store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser'); $store.Open('ReadOnly'); $thumbprints=@($store.Certificates | ForEach-Object Thumbprint | Sort-Object); $store.Close(); ConvertTo-Json -Compress -InputObject $thumbprints")); }
 const baseline = roots();
+let persistentRoots;
 const results = [];
 let child, browser;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -49,7 +50,7 @@ async function start() {
   let page;
   await waitFor(() => { page=browser.contexts().flatMap(c => c.pages()).find(p => p.url().includes('/__byok-api__/')); return !!page; }, 'controller page');
   page.setDefaultTimeout(Number(process.env.NATIVE_TIMEOUT_MS || 120000));
-  await page.getByRole('heading', { name:'Cursor 接管', exact:true }).waitFor();
+  await page.getByRole('heading', { name:'模型与连接', exact:true }).waitFor();
   return page;
 }
 async function terminate() {
@@ -63,11 +64,17 @@ async function terminate() {
   await page.getByText('未接管', {exact:true}).waitFor();
   assert.deepEqual(fs.readFileSync(settings), original);
   assert.deepEqual(roots(), baseline);
+  assert(await page.getByRole('button', {name:'同意并安装证书',exact:true}).isDisabled());
+  await page.getByRole('checkbox').check();
+  console.log('Awaiting ONE-TIME Windows CA install confirmation.');
+  await page.getByRole('button', {name:'同意并安装证书',exact:true}).click();
+  await page.getByRole('dialog').waitFor({state:'hidden'});
+  persistentRoots=roots(); assert.equal(persistentRoots.filter(t=>!baseline.includes(t)).length,1);
   await page.getByLabel('Base URL', {exact:true}).fill('http://127.0.0.1:9/v1');
   await page.getByLabel('API Key', {exact:true}).fill('synthetic-native-acceptance-key');
   await page.getByRole('button', {name:'保存连接',exact:true}).click();
   await page.getByText('连接已保存，所有模型已同步。').waitFor();
-  await page.getByRole('button', {name:'添加模型'}).click();
+  await page.getByRole('button', {name:'手动添加'}).click();
   await page.getByLabel('显示名称', {exact:true}).fill('GPT fixture');
   await page.getByLabel('模型 ID', {exact:true}).fill('gpt-fixture');
   await page.getByRole('button', {name:'保存模型',exact:true}).click();
@@ -85,8 +92,8 @@ async function terminate() {
   await page.screenshot({path:path.join(evidence,'controller-enabled.png')});
   await page.getByRole('button', {name:'关闭并恢复',exact:true}).click();
   await page.getByText('未接管', {exact:true}).waitFor();
-  assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),baseline);assert(!fs.existsSync(journal));
-  console.log('Checkpoint:', results.length + 1); results.push('Native UI enable/disable: settings bytes and CurrentUser Root set restored exactly; token readonly.');
+  assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),persistentRoots);assert(!fs.existsSync(journal));
+  console.log('Checkpoint:', results.length + 1); results.push('Native UI enable/disable: settings restored, persistent certificate retained; token readonly.');
   // Simulate process termination with an active durable journal, then recover offline.
   await page.getByRole('button', {name:'开启接管',exact:true}).click();
   await page.getByText('接管中', {exact:true}).waitFor();
@@ -95,7 +102,7 @@ async function terminate() {
   fs.writeFileSync(journal, Buffer.from('synthetic-corrupt-journal'));
   assert.notEqual(restore().status,0);assert.equal(fs.readFileSync(journal).toString(),'synthetic-corrupt-journal');
   fs.writeFileSync(journal,savedJournal);
-  assert.equal(restore().status,0);assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),baseline);assert(!fs.existsSync(journal));
+  assert.equal(restore().status,0);assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),persistentRoots);assert(!fs.existsSync(journal));
   assert.equal(restore().status,0);
   console.log('Checkpoint:', results.length + 1); results.push('Forced interruption + offline --restore: corrupted journal retained/nonzero; valid journal restored/idempotent.');
   // Startup recovery must not restart takeover. Closing the real window must restore before exit.
@@ -106,15 +113,23 @@ async function terminate() {
   await terminate();
   page=await start();
   await page.getByText('未接管', {exact:true}).waitFor();
-  assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),baseline);
+  assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),persistentRoots);
   await page.getByRole('button', {name:'开启接管',exact:true}).click();
   await page.getByText('接管中', {exact:true}).waitFor();
   const closeRequested=ps(`(Get-Process -Id ${child.pid}).CloseMainWindow()`);
   assert.equal(closeRequested,'True');
   await waitFor(()=>child.exitCode !== null,'window close recovery');child=null;browser=null;
-  assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),baseline);assert(!fs.existsSync(journal));
+  assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),persistentRoots);assert(!fs.existsSync(journal));
   assert.equal(fs.readFileSync(sentinel).toString(),'synthetic sentinel');
   console.log('Checkpoint:', results.length + 1); results.push('Startup recovery and native window X: restored before exit; state.vscdb sentinel unchanged.');
+  page=await start();
+  await page.getByRole('button',{name:'关于',exact:true}).click();
+  console.log('Awaiting FINAL Windows CA deletion confirmation.');
+  await page.getByRole('button',{name:'卸载证书并恢复',exact:true}).click();
+  await page.getByText('专属证书已卸载，Cursor 设置已恢复。可退出后移除便携程序；模型配置和统计仍保留在数据目录。').waitFor();
+  assert.deepEqual(roots(),baseline); assert(!fs.existsSync(path.join(data,'ca','trust-consent.dpapi')));
+  await terminate();
+  results.push('Explicit certificate uninstall: exact CurrentUser Root baseline restored; consent receipt removed.');
   for (const name of ['cursor-sub2api.db','cursor-sub2api.db-wal']) { // gitleaks:allow -- database filenames, no credential
     const file=path.join(data,name);
     if(fs.existsSync(file)) assert(!fs.readFileSync(file).includes(Buffer.from('synthetic-native-acceptance-key')));

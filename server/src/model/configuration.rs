@@ -8,6 +8,10 @@ use sha2::{Digest, Sha256};
 use crate::{Error, Result};
 
 pub const OPENAI_RESPONSES_ENDPOINT: &str = "/v1/responses";
+pub fn default_reasoning_efforts() -> Vec<String> {
+    ["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec()
+}
+
 pub const OPENAI_CHAT_ENDPOINT: &str = "/v1/chat/completions";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -101,6 +105,8 @@ pub struct ModelConfigInput {
     pub model_id: String,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default = "default_reasoning_efforts")]
+    pub allowed_reasoning_efforts: Vec<String>,
     #[serde(default)]
     pub openai_endpoint: String,
     #[serde(default)]
@@ -138,6 +144,8 @@ pub struct ModelConfig {
     pub tooltip_data: String,
     pub model_id: String,
     pub reasoning_effort: Option<String>,
+    #[serde(default = "default_reasoning_efforts")]
+    pub allowed_reasoning_efforts: Vec<String>,
     pub openai_endpoint: String,
     pub openai_extra_params_enabled: bool,
     pub openai_extra_params: serde_json::Value,
@@ -198,7 +206,7 @@ impl ModelConfig {
         if model.context_window_tokens.is_none() {
             model.context_window_tokens = self.context_window_tokens;
         }
-        if model.reasoning.effort.is_none() {
+        if model.reasoning.effort.as_ref().is_none_or(|effort| !self.allowed_reasoning_efforts.contains(effort)) {
             model.reasoning.effort = match self.model_type {
                 ModelType::OpenAi => self.reasoning_effort.clone(),
                 ModelType::Anthropic => self.anthropic_thinking_effort.clone(),
@@ -233,7 +241,17 @@ pub fn normalize_model_input(input: &ModelConfigInput) -> Result<ModelConfigInpu
     validate_object(&input.anthropic_extra_params, "Anthropic extra params")?;
     validate_headers(&input.custom_headers)?;
 
+    let mut allowed_reasoning_efforts = Vec::new();
+    for effort in &input.allowed_reasoning_efforts {
+        let effort = normalize_effort(Some(effort), false)?.expect("nonempty effort");
+        if !allowed_reasoning_efforts.contains(&effort) { allowed_reasoning_efforts.push(effort); }
+    }
+    let default_effort = if input.model_type == ModelType::OpenAi { &reasoning_effort } else { &anthropic_thinking_effort };
+    if default_effort.as_ref().is_some_and(|effort| !allowed_reasoning_efforts.contains(effort)) {
+        return Err(Error::Config("默认推理强度必须属于已勾选的可选强度".into()));
+    }
     let normalized = ModelConfigInput {
+        allowed_reasoning_efforts,
         sort_order: input.sort_order.max(0),
         display_name,
         group_name,

@@ -37,6 +37,8 @@ pub struct Sub2ApiModelInput {
     pub sort_order: i64,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default = "crate::model::default_reasoning_efforts")]
+    pub allowed_reasoning_efforts: Vec<String>,
     #[serde(default)]
     pub openai_endpoint: Option<String>,
     #[serde(default)]
@@ -49,6 +51,7 @@ pub struct Sub2ApiModelInput {
 impl Sub2ApiModelInput {
     fn from_model(m: &ModelConfig) -> Self {
         Self {
+            allowed_reasoning_efforts: m.allowed_reasoning_efforts.clone(),
             display_name: m.display_name.clone(),
             model_id: m.model_id.clone(),
             model_type: m.model_type,
@@ -77,6 +80,7 @@ impl Sub2ApiModelInput {
             ));
         }
         normalize_model_input(&ModelConfigInput {
+            allowed_reasoning_efforts: self.allowed_reasoning_efforts.clone(),
             display_name: self.display_name.clone(),
             tooltip_data: self.display_name.clone(),
             model_id: self.model_id.clone(),
@@ -158,6 +162,10 @@ impl Store {
                 has_api_key: false,
             },
         })
+    }
+    pub(crate) async fn sub2api_credentials(&self) -> Result<(String, String)> {
+        let saved = self.saved_connection().await?.ok_or_else(|| Error::Config("请先保存 Sub2API 连接".into()))?;
+        Ok((saved.base_url, secrets::unprotect_string(&saved.api_key_protected)?))
     }
     pub async fn sub2api_model_input(&self, input: &Sub2ApiModelInput) -> Result<ModelConfigInput> {
         let saved = self

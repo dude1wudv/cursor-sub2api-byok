@@ -142,3 +142,32 @@ async fn rejects_unsafe_bases_empty_keys_and_forged_model_fields() {
     }
     store.pool().close().await;
 }
+
+#[tokio::test]
+async fn allowed_efforts_roundtrip_validation_and_connection_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::connect(&format!("sqlite://{}", dir.path().join("efforts.db").display())).await.unwrap();
+    store.set_sub2api_connection(Sub2ApiConnectionInput { base_url: "https://example.com".into(), api_key: Some("synthetic".into()) }).await.unwrap();
+    for kind in ["openai", "anthropic"] {
+        let mut input = input(kind, kind);
+        input.allowed_reasoning_efforts = vec!["low".into(), "high".into(), "high".into()];
+        input.reasoning_effort = Some("high".into());
+        let configured = store.sub2api_model_input(&input).await.unwrap();
+        let saved = store.create_model(&configured).await.unwrap();
+        assert_eq!(saved.allowed_reasoning_efforts, vec!["low", "high"]);
+        input.reasoning_effort = Some("max".into());
+        assert!(store.sub2api_model_input(&input).await.is_err());
+        input.reasoning_effort = None;
+        input.allowed_reasoning_efforts = vec!["invalid".into()];
+        assert!(store.sub2api_model_input(&input).await.is_err());
+        input.allowed_reasoning_efforts = vec!["medium".into()];
+        input.reasoning_effort = Some("medium".into());
+        store.update_model(&saved.model_hash, &store.sub2api_model_input(&input).await.unwrap()).await.unwrap();
+    }
+    store.set_sub2api_connection(Sub2ApiConnectionInput { base_url: "https://other.example/v1".into(), api_key: None }).await.unwrap();
+    for saved in store.models().await.unwrap() {
+        assert_eq!(saved.allowed_reasoning_efforts, vec!["medium"]);
+        assert_eq!(saved.reasoning_effort.or(saved.anthropic_thinking_effort).as_deref(), Some("medium"));
+    }
+    store.pool().close().await;
+}

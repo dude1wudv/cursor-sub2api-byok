@@ -21,7 +21,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub struct ControlService {
-    store: Store,
+    pub(super) store: Store,
     cursor_harness: CursorHarness,
     provider: Arc<dyn Provider>,
     model_tests: Arc<Mutex<BTreeMap<String, CancellationToken>>>,

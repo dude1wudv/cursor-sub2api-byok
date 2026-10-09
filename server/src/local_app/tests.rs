@@ -107,3 +107,26 @@ async fn restart_recovers_all_journal_stages_without_starting_proxy_and_retains_
         h.inner.store.pool().close().await;
     }
 }
+
+#[tokio::test]
+async fn persistent_trust_is_retained_across_disable_and_recovery() {
+    for recovery in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let h = harness(dir.path()).await;
+        let mut patch = settings::SettingsPatch::prepare(&h.inner.settings_path).unwrap();
+        patch.set_proxy_url("http://127.0.0.1:12345").unwrap();
+        patch.apply().unwrap();
+        // An invalid DER proves restoration does not even call the native removal API.
+        let mut record = journal::from_patch(&patch, b"synthetic-not-a-certificate".to_vec(), false).unwrap();
+        record.ca_persistent_trust = true;
+        record.stage = journal::Stage::Active;
+        journal::write(&h.inner.journal_path, &record).unwrap();
+        if recovery { h.recover_pending().await.unwrap(); } else { h.disable().await.unwrap(); }
+        assert!(!h.inner.settings_path.exists());
+        assert!(!h.inner.journal_path.exists());
+        assert!(h.accept_certificate(false, 1).await.is_err());
+        assert!(h.accept_certificate(true, 999).await.is_err());
+        assert!(!h.inner.ca.consent_accepted().unwrap());
+        h.inner.store.pool().close().await;
+    }
+}

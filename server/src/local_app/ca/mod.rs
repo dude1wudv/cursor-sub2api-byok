@@ -4,6 +4,8 @@ use std::{fs, path::PathBuf};
 #[cfg(target_os = "windows")]
 mod windows;
 
+mod consent;
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 

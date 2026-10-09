@@ -1,6 +1,6 @@
 {
   "name": "cursor-sub2api-byok-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cursor Sub2API BYOK desktop controller",
   "type": "module",
   "scripts": {

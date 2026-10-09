@@ -3,6 +3,7 @@ pub mod auth;
 mod calls;
 mod harness;
 mod models;
+mod discovery;
 mod overview;
 mod service;
 
@@ -120,6 +121,7 @@ pub fn api_router(service: ControlService) -> Router {
             "/__byok-api__/api/sub2api/connection",
             get(connection).put(save_connection),
         )
+        .route("/__byok-api__/api/sub2api/models", get(discovery::list))
         .route("/__byok-api__/api/overview", get(overview::get))
         .route("/__byok-api__/api/llm-calls", get(calls::list))
         .route("/__byok-api__/api/llm-calls/{call_id}", get(calls::detail))
@@ -131,6 +133,8 @@ pub fn api_router(service: ControlService) -> Router {
             "/__byok-api__/api/harness/cursor/ca/initialize",
             post(harness::initialize_ca),
         )
+        .route("/__byok-api__/api/harness/cursor/ca/consent", post(harness::consent))
+        .route("/__byok-api__/api/harness/cursor/ca/uninstall", post(harness::uninstall_certificate))
         .route(
             "/__byok-api__/api/harness/cursor/enabled",
             put(harness::set_enabled),

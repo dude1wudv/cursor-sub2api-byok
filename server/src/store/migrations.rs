@@ -456,7 +456,9 @@ mod tests {
             .unwrap();
 
             assert_eq!(checksum_after, checksum_before);
-            assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+            assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+            let default_efforts: String = sqlx::query_scalar("SELECT dflt_value FROM pragma_table_info('model_configs') WHERE name = 'allowed_reasoning_efforts_json'").fetch_one(&pool).await.unwrap();
+            assert_eq!(default_efforts, r#"'["low","medium","high","xhigh","max"]'"#);
             assert_eq!(checkpoint_table_exists, 1);
             assert_eq!(argument_error_column_exists, 1);
         }

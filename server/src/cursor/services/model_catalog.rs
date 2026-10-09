@@ -453,13 +453,41 @@ fn unary_payload(body: &Bytes) -> Result<(bool, &[u8])> {
 fn available_model(model: &ModelConfig) -> AvailableModel {
     let contexts = context_options(model.context_window_tokens);
     let tooltip = model_tooltip(model);
-    let variants = model_variants(
+    let mut variants = model_variants(
         &model.model_hash,
         &model.display_name,
         &tooltip,
         &contexts,
         true,
     );
+    let default_effort = match model.model_type {
+        crate::model::ModelType::OpenAi => model.reasoning_effort.as_deref(),
+        crate::model::ModelType::Anthropic => model.anthropic_thinking_effort.as_deref(),
+    };
+    variants.retain(|variant| variant.parameter_values.iter().any(|p| p.id == "reasoning" && model.allowed_reasoning_efforts.contains(&p.value)));
+    // The model-default entry deliberately sends no explicit effort.
+    if default_effort.is_none() {
+    for (context, label) in &contexts {
+        for fast in [false, true] {
+            let mut variant = model_variant(&model.model_hash, &model.display_name, &tooltip, context, label, Some(("default", "模型默认")), fast);
+            variant.is_default_max_config = None;
+            variant.is_default_non_max_config = None;
+            variants.push(variant);
+        }
+    }
+    }
+    let default_context = model.context_window_tokens.map(|v| v.to_string()).unwrap_or_else(|| DEFAULT_CONTEXT.into());
+    for variant in &mut variants {
+        let selected = |id: &str, value: &str| variant.parameter_values.iter().any(|p| p.id == id && p.value == value);
+        let is_default = selected("context", &default_context) && selected("fast", "false") && selected("reasoning", default_effort.unwrap_or("default"));
+        variant.is_default_max_config = is_default.then_some(true);
+        variant.is_default_non_max_config = is_default.then_some(true);
+    }
+    let mut parameters = model_parameters(&contexts, true);
+    if let Some(values) = parameters.iter_mut().find(|p| p.id == "reasoning").and_then(|p| p.parameter_type.as_mut()).and_then(|p| p.enum_parameter.as_mut()) {
+        values.values.retain(|v| model.allowed_reasoning_efforts.contains(&v.value));
+        if default_effort.is_none() { values.values.insert(0, EnumParameterValue { value: "default".into(), display_name: Some("模型默认".into()) }); }
+    }
     let legacy_slugs = variants
         .iter()
         .filter_map(|variant| variant.legacy_slug.clone())
@@ -482,7 +510,7 @@ fn available_model(model: &ModelConfig) -> AvailableModel {
         inputbox_short_model_name: Some(model.display_name.clone()),
         supports_sandboxing: Some(true),
         supports_cmd_k: Some(false),
-        parameter_definitions: model_parameters(&contexts, true),
+        parameter_definitions: parameters,
         variants,
         legacy_slugs,
         named_model_section_index: Some(1),
@@ -785,6 +813,7 @@ mod tests {
             tooltip_data: "Local Model".into(),
             model_id: "upstream-model".into(),
             reasoning_effort: None,
+            allowed_reasoning_efforts: crate::model::default_reasoning_efforts(),
             openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
             openai_extra_params_enabled: false,
             openai_extra_params: serde_json::json!({}),
@@ -800,6 +829,41 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
         }
+    }
+
+    #[test]
+    fn catalog_exposes_only_allowed_efforts_and_saved_default() {
+        let mut config = model();
+        config.allowed_reasoning_efforts = vec!["low".into(), "xhigh".into()];
+        config.reasoning_effort = Some("xhigh".into());
+        let catalog = available_model(&config);
+        let effort = catalog.parameter_definitions.iter().find(|p| p.id == "reasoning").unwrap();
+        let values = &effort.parameter_type.as_ref().unwrap().enum_parameter.as_ref().unwrap().values;
+        assert_eq!(values.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), vec!["low", "xhigh"]);
+        assert_eq!(catalog.variants.len(), CONTEXTS.len() * 2 * 2);
+        let defaults: Vec<_> = catalog.variants.iter().filter(|v| v.is_default_non_max_config == Some(true)).collect();
+        assert_eq!(defaults.len(), 1);
+        assert!(defaults[0].parameter_values.iter().any(|p| p.id == "reasoning" && p.value == "xhigh"));
+        config.reasoning_effort = None;
+        config.allowed_reasoning_efforts.clear();
+        let catalog = available_model(&config);
+        assert_eq!(catalog.variants.len(), CONTEXTS.len() * 2);
+        assert!(catalog.variants.iter().all(|v| v.parameter_values.iter().any(|p| p.id == "reasoning" && p.value == "default")));
+        let mut request = crate::model::ModelSpec::new("local");
+        request.reasoning.effort = Some("max".into());
+        config.configure(&mut request);
+        assert_eq!(request.reasoning.effort, None);
+        config.model_type = crate::model::ModelType::Anthropic;
+        config.allowed_reasoning_efforts = vec!["medium".into(), "high".into()];
+        config.anthropic_thinking_effort = Some("medium".into());
+        let catalog = available_model(&config);
+        let default = catalog.variants.iter().find(|v| v.is_default_non_max_config == Some(true)).unwrap();
+        assert!(default.parameter_values.iter().any(|p| p.value == "medium"));
+        config.configure(&mut request);
+        assert_eq!(request.reasoning.effort.as_deref(), Some("medium"));
+        request.reasoning.effort = Some("high".into());
+        config.configure(&mut request);
+        assert_eq!(request.reasoning.effort.as_deref(), Some("high"));
     }
 
     #[test]

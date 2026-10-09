@@ -101,7 +101,7 @@ fn from_requested(
             "effort" | "reasoning" => {
                 let effort = parameter.value.trim();
                 spec.reasoning.effort =
-                    (effort != "none" && !effort.is_empty()).then(|| effort.to_string());
+                    (effort != "none" && effort != "default" && !effort.is_empty()).then(|| effort.to_string());
                 spec.reasoning.enabled |= spec.reasoning.effort.is_some();
             }
             "thinking" => spec.reasoning.enabled |= parse_bool(parameter)?,

@@ -829,6 +829,7 @@ async fn one_run_can_auto_compact_again_after_more_tool_output() {
     let (_directory, store) = fixtures::temp_store().await;
     let model = store
         .create_model(&ModelConfigInput {
+            allowed_reasoning_efforts: cursor_server::model::default_reasoning_efforts(),
             sort_order: 0,
             display_name: "Repeated compaction".into(),
             group_name: None,

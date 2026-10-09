@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 — 2026-10-09
+
+- 可选推理强度多选 + 默认值单选，Cursor 目录和实际请求配置使用同一设置。
+- `/v1/models` 获取、搜索、去重和批量添加；Key 仅由服务端解密使用。
+- 重做浅色工作台、模型卡片、连接测试结果和 Token 用量统计，不含广告。
+- 首次勾选使用说明后安装 CurrentUser 专属 CA；关闭/退出/崩溃恢复保留证书，“卸载证书并恢复”才精确删除。
+- DPAPI 保存同意版本、时间及证书 DER；损坏记录不覆盖，删除失败可重试。
+- 修复旧 CI 路径测试对 Windows 8.3 短路径的错误比较。
+
+真实 Cursor/GPT/Claude/MCP 闭环仍未验收。MicroEduLab 为维护者署名，EXE 未做 Authenticode 签名。
+
 ## 0.1.0 — 2026-10-09
 
 首次公开开发版本，由 [MicroEduLab](https://microedulab.com/) 维护。
