@@ -105,7 +105,7 @@ async function terminate() {
   assert.equal(restore().status,0);assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),persistentRoots);assert(!fs.existsSync(journal));
   assert.equal(restore().status,0);
   console.log('Checkpoint:', results.length + 1); results.push('Forced interruption + offline --restore: corrupted journal retained/nonzero; valid journal restored/idempotent.');
-  // Startup recovery must not restart takeover. Closing the real window must restore before exit.
+  // Startup recovery must not restart takeover. Closing the window keeps takeover alive in the tray.
   page=await start();
   await page.getByText('未接管', {exact:true}).waitFor();
   await page.getByRole('button', {name:'开启接管',exact:true}).click();
@@ -118,10 +118,15 @@ async function terminate() {
   await page.getByText('接管中', {exact:true}).waitFor();
   const closeRequested=ps(`(Get-Process -Id ${child.pid}).CloseMainWindow()`);
   assert.equal(closeRequested,'True');
-  await waitFor(()=>child.exitCode !== null,'window close recovery');child=null;browser=null;
+  // The tray can retain an unnamed native helper window, so a nonzero handle is not visibility.
+  await waitFor(()=>ps(`(Get-Process -Id ${child.pid}).MainWindowTitle`) === '', 'window hidden to tray');
+  assert.equal(child.exitCode,null);assert(fs.existsSync(journal));assert(!fs.readFileSync(settings).equals(original));
+  await page.getByRole('button',{name:'关闭并恢复',exact:true}).click();
+  await page.getByText('未接管',{exact:true}).waitFor();
   assert.deepEqual(fs.readFileSync(settings),original);assert.deepEqual(roots(),persistentRoots);assert(!fs.existsSync(journal));
   assert.equal(fs.readFileSync(sentinel).toString(),'synthetic sentinel');
-  console.log('Checkpoint:', results.length + 1); results.push('Startup recovery and native window X: restored before exit; state.vscdb sentinel unchanged.');
+  console.log('Checkpoint:', results.length + 1); results.push('Startup recovery and native window X: hidden process retains takeover; explicit disable restores; state.vscdb sentinel unchanged.');
+  await terminate();
   page=await start();
   await page.getByRole('button',{name:'关于',exact:true}).click();
   console.log('Awaiting FINAL Windows CA deletion confirmation.');

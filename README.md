@@ -31,7 +31,7 @@ Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab]
 2. 完全退出 Cursor，打开 `Cursor-Sub2API-BYOK.exe`，阅读并勾选首次使用说明，安装当前用户专属证书。
 3. 保存 Sub2API HTTPS 根地址或 `/v1` 与专用 API Key，点击“获取模型列表”勾选添加。按模型名称预选 Responses/Claude Messages，添加前可调整协议。编辑模型卡片设置可选强度与默认值；只勾选上游支持的档位。
 4. 完全退出 Cursor，点击“开启接管”，再手动打开 Cursor 并使用原生登录。若尚未授权，完成首次说明与安装后会继续开启；已有授权不会重复弹出应用协议。
-5. 完全退出 Cursor 后点击“关闭并恢复”，或关闭本程序窗口。窗口 × 会恢复后退出；Cursor 仍运行或恢复失败时阻止退出。
+5. 窗口 × 会隐藏到系统托盘，继续保持接管；点击托盘图标可重新打开控制台。完全退出 Cursor 后点击“关闭并恢复”，或在托盘菜单选择“退出并恢复”。显式退出时，Cursor 仍运行或恢复失败会阻止退出并重新显示窗口。
 
 本程序不修改 Cursor 安装文件、hosts、系统代理或账号数据库，不伪造会员资格。官方账号/计费流量继续转发到 Cursor。原生工具、MCP、Skills、检查点、取消和 compaction 仍使用上游实现。
 
@@ -53,7 +53,7 @@ Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab]
 
 `--cursor-user-data-dir` 指向用户数据根，实际操作其 `User\settings.json`。路径须为绝对路径且不能经过 reparse point；GUI 与恢复命令全局单实例互斥。
 
-首次同意使用说明后生成专属 CA，只安装到 CurrentUser Root。Windows 首次安装和最终删除时可能要求确认；核对名称为 `Cursor Sub2API BYOK Local CA` 后点击“是”。日常关闭、窗口退出、崩溃恢复与 `--restore` 恢复 settings 并停止代理，**保留已同意持续安装的证书**，因此无需反复确认。v0.1.0 遗留事务仍按当时记录恢复临时信任。卸载前请进入“关于 → 卸载证书并恢复”，成功后再删除便携程序；模型配置和统计保留。证书按 DPAPI 同意记录的完整 DER 精确删除，失败保留记录供重试；不要提前删除数据目录。原 JSONC 的 BOM、CRLF、注释及无关字段保留。用户在接管期间改成第三值的管理项保留并提示，无法确认归属时保留 journal 并进入 `recovery_required`。
+首次同意使用说明后生成专属 CA，只安装到 CurrentUser Root。Windows 首次安装和最终删除时可能要求确认；核对名称为 `Cursor Sub2API BYOK Local CA` 后点击“是”。关闭接管、托盘退出、崩溃恢复与 `--restore` 恢复 settings 并停止代理，**保留已同意持续安装的证书**，因此无需反复确认。v0.1.0 遗留事务仍按当时记录恢复临时信任。卸载前请进入“关于 → 卸载证书并恢复”，成功后再删除便携程序；模型配置和统计保留。证书按 DPAPI 同意记录的完整 DER 精确删除，失败保留记录供重试；不要提前删除数据目录。原 JSONC 的 BOM、CRLF、注释及无关字段保留。用户在接管期间改成第三值的管理项保留并提示，无法确认归属时保留 journal 并进入 `recovery_required`。
 
 崩溃后使用相同参数重新启动或执行 `--restore`。恢复命令不启动代理或网络客户端，成功返回 0，冲突返回非零。不要删除 `takeover-journal.dpapi` 或复制其他用户的数据目录来绕过恢复。
 
@@ -90,6 +90,10 @@ scripts/                 # 便携打包、依赖许可及隔离原生验证
 
 MIT，原版权 `Copyright (c) 2026 leookun` 保持不变。MicroEduLab 维护本 fork；第三方依赖说明随发行包提供。[MicroEduLab 网站](https://microedulab.com/)
 
+
+## v0.2.3 缓存统计与托盘
+
+用量页新增缓存读取 Token、缓存读取率卡片，随时间与模型筛选更新。读取率 = 缓存读取 /（非缓存输入 + 缓存读取 + 缓存写入），无输入时显示“—”。窗口 × 隐藏到托盘并保持代理运行；完全退出请用托盘“退出并恢复”。
 
 ## v0.2.2 流式连接修复
 

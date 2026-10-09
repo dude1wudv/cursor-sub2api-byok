@@ -191,7 +191,9 @@ pub fn run() -> ExitCode {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                window.app_handle().exit(0);
+                if let Err(error) = window.hide() {
+                    tracing::warn!(%error, "could not hide controller window to tray");
+                }
             }
         })
         .build(tauri::generate_context!());

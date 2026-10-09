@@ -123,7 +123,7 @@ input[type=checkbox] { width: 14px; height: 14px; flex-shrink: 0; margin: 0; acc
 .discovery-row label { flex-direction: row; align-items: center; overflow-wrap: anywhere; }
 .discovery-row select { width: 175px; flex-shrink: 0; font-size: 11px; }
 .discovery-row small { display: block; margin-top: 3px; color: #8494c0; }
-.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 15px; }
+.metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }
 .metric { position: relative; display: flex; flex-direction: column; gap: 12px; padding: 21px; overflow: hidden; }
 .metric::after { content: ""; position: absolute; width: 65px; height: 65px; top: -28px; right: -25px; border-radius: 50%; background: #dbe6ff; filter: blur(16px); }
 .metric:nth-child(2)::after { background: #e2d9ff; }

@@ -20,6 +20,7 @@ let browser;
   let consent=false, ca='missing', integration='disabled', cursorRunning=false;
   let consentCalls=0, enableCalls=0, installationCancelled=false;
   let discoveryError=true, editorError=true;
+  let usageCase='normal';
   const status = () => ({integration,ca,certificate_consent:consent,warnings:[],restart_required:cursorRunning});
   await page.route('**/__byok-api__/api/**', async route => {
     const req=route.request(); assert.equal(req.headers()['x-sub2api-control-token'],'synthetic-ui-token');
@@ -49,6 +50,11 @@ let browser;
     }
     if(endpoint==='overview') {
       assert(url.searchParams.get('start_ms'));const now=Date.now();
+      if(usageCase==='empty') return send({metrics:{llm_calls:0,successful_calls:0,failed_calls:0,token_usage:0,input_tokens:0,output_tokens:0,cache_read_tokens:0,cache_write_tokens:0},token_usage_granularity:'day',token_usage_series:[]});
+      if(usageCase==='filtered') {
+        assert.deepEqual(JSON.parse(url.searchParams.get('model_hashes')),['gpt']);
+        return send({metrics:{llm_calls:1,successful_calls:1,failed_calls:0,token_usage:150,input_tokens:100,output_tokens:50,cache_read_tokens:0,cache_write_tokens:0},token_usage_granularity:'day',token_usage_series:[]});
+      }
       return send({metrics:{llm_calls:128,successful_calls:126,failed_calls:2,token_usage:1840000,input_tokens:650000,output_tokens:230000,cache_read_tokens:850000,cache_write_tokens:110000},token_usage_granularity:'day',token_usage_series:Array.from({length:14},(_,i)=>({bucket_start_ms:now-(13-i)*86400000,input_tokens:(i%3+1)*12000,cache_read_tokens:i*4400,cache_write_tokens:i*1700,output_tokens:9000+i*1200}))});
     }
     return send({message:`Unexpected ${endpoint}`},404);
@@ -109,7 +115,15 @@ let browser;
   await page.locator('main').evaluate(el=>el.scrollTo(0,0));
   await page.screenshot({path:path.join(evidence,'models.png')});
   await page.getByRole('button',{name:'用量统计',exact:true}).click();await page.getByText('1.8M',{exact:true}).waitFor();
+  const cacheCard=page.locator('.metric').filter({has:page.getByText('缓存读取 Token',{exact:true})});
+  const rateCard=page.locator('.metric').filter({has:page.getByText('缓存读取率',{exact:true})});
+  assert.equal(await page.locator('.metric').count(),6);
+  await cacheCard.getByText('850K',{exact:true}).waitFor();await rateCard.getByText('52.8%',{exact:true}).waitFor();
   await page.screenshot({path:path.join(evidence,'usage.png')});
+  usageCase='empty';await page.getByRole('button',{name:'刷新',exact:true}).click();
+  await rateCard.getByText('—',{exact:true}).waitFor();await cacheCard.getByText('0',{exact:true}).waitFor();
+  usageCase='filtered';await page.getByLabel('统计模型',{exact:true}).selectOption('gpt');
+  await rateCard.getByText('0.0%',{exact:true}).waitFor();await cacheCard.getByText('0',{exact:true}).waitFor();
   await page.setViewportSize({width:900,height:700});await page.getByRole('button',{name:'模型与连接',exact:true}).click();
   assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({path:path.join(evidence,'models-compact.png')});

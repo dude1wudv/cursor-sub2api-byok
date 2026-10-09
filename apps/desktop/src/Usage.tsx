@@ -29,6 +29,8 @@ export function Usage({ models }: { models: Model[] }) {
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [refresh]);
   const m = overview?.metrics;
+  const totalInput = m ? m.input_tokens + m.cache_read_tokens + m.cache_write_tokens : 0;
+  const cacheReadRate = m && totalInput > 0 ? `${(m.cache_read_tokens / totalInput * 100).toFixed(1)}%` : "—";
   const data = overview?.token_usage_series ?? [];
   const total = (b: UsageBucket) => series.reduce((n, [key]) => n + b[key], 0);
   const max = Math.max(1, ...data.map(total));
@@ -37,7 +39,8 @@ export function Usage({ models }: { models: Model[] }) {
     {error && <div className="alert error" role="alert">{error}</div>}
     <div className="metric-grid">{[
       ["总 Token", m?.token_usage, "输入 + 缓存 + 输出"], ["请求次数", m?.llm_calls, `${m?.successful_calls ?? 0} 成功 · ${m?.failed_calls ?? 0} 未成功`], ["输入 Token", m?.input_tokens, "不含缓存部分"], ["输出 Token", m?.output_tokens, "模型生成用量"],
-    ].map(([label, value, note]) => <div className="metric card" key={String(label)}><span>{label}</span><strong title={typeof value === "number" ? value.toLocaleString() : ""}>{typeof value === "number" ? number(value) : "—"}</strong><small>{note}</small></div>)}</div>
+      ["缓存读取 Token", m?.cache_read_tokens, "复用已有输入缓存"], ["缓存读取率", cacheReadRate, "缓存读取 ÷ 全部输入 Token"],
+    ].map(([label, value, note]) => <div className="metric card" key={String(label)}><span>{label}</span><strong title={typeof value === "number" ? value.toLocaleString() : ""}>{typeof value === "number" ? number(value) : value ?? "—"}</strong><small>{note}</small></div>)}</div>
     <section className="card chart-card"><div className="section-heading"><div><h2>Token 使用趋势</h2><p className="hint">悬停或聚焦柱形查看明细</p></div><span className="badge">{overview?.token_usage_granularity === "day" ? "按天" : "按小时"}</span></div>
       <div className="legend">{series.map(([, label, color]) => <span key={label}><i style={{ background: color }} />{label}</span>)}</div>
       <div className="chart" aria-label="Token 用量柱形图">{data.map((b, index) => {
@@ -47,7 +50,7 @@ export function Usage({ models }: { models: Model[] }) {
         return <div className="chart-column" key={b.bucket_start_ms} tabIndex={0} aria-label={detail} title={detail}><div className="bar-track"><div className="bar-stack" style={{ height: `${total(b) / max * 100}%` }}>{series.map(([key, , color]) => b[key] > 0 && <i key={key} style={{ background: color, flexGrow: b[key] }} />)}</div></div><span>{index % Math.max(1, Math.ceil(data.length / 12)) === 0 ? caption : ""}</span></div>;
       })}</div>
       {!loading && data.every(b => total(b) === 0) && <p className="chart-empty">这个时间范围暂无 Token 用量，开始使用后将在这里显示。</p>}
-      <div className="cache-summary"><span>缓存读取 <strong>{m ? number(m.cache_read_tokens) : "—"}</strong></span><span>缓存写入 <strong>{m ? number(m.cache_write_tokens) : "—"}</strong></span></div>
+      <div className="cache-summary"><span>缓存写入 <strong>{m ? number(m.cache_write_tokens) : "—"}</strong></span><span>读取率按当前筛选汇总计算，全部输入包含缓存读取与写入，不含输出。</span></div>
     </section>
   </>;
 }

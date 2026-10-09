@@ -21,7 +21,7 @@ pub fn create(app: &mut App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, QUIT_MENU_ID, "退出", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, QUIT_MENU_ID, "退出并恢复", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &separator, &quit])?;
 
     TrayIconBuilder::with_id("main")
