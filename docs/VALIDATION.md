@@ -14,7 +14,16 @@ v0.2.0，2026-10-09，Windows x64，固定上游 `7ee68c2b7fef66a0e0279273d037d2
 
 Tauri `--no-bundle` 构建通过，已生成 EXE、ZIP、原 LICENSE、第三方许可及 SHA256SUMS，并核对本机安装文件与发布包一致。
 
-v0.2.0 实际 EXE 已启动并进入首次授权/Windows 证书确认流程；本次因未收到系统确认，等待 300 秒后安全结束。离线恢复返回 0，CurrentUser Root 集合与测试前基线一致，无证书遗留。**本次持续信任的完整原生开关/崩溃/卸载流程尚未完成验证**；不沿用 v0.1.0 的证书临时信任证据冒充通过。隔离验证始终使用专用临时数据目录和 Cursor profile，不使用真实 Key 或真实 Cursor 会话。
+v0.2.0 实际 EXE 的隔离原生验证已通过，使用专用临时数据目录、Cursor profile 与合成 Key：
+
+- 首次应用同意 + Windows 确认安装后，多次开启/关闭无需再次安装或删除证书。
+- 关闭后 settings 的 BOM、CRLF、注释及全部原始字节恢复，专属证书继续受信任。
+- 强制终止后，损坏 journal 被保留并返回非零；有效 journal 的离线 `--restore` 恢复成功且可重复执行。
+- 启动恢复不自动接管；真实窗口 × 在恢复后退出，持续证书保留。
+- 主动“卸载证书并恢复”后 CurrentUser Root 集合精确回到基线，同意记录移除。
+- `state.vscdb` 哨兵不变；DB/WAL/日志无合成 Key 明文；CA 私钥由 DPAPI 保护。
+
+GitHub Windows CI [37946164373](https://github.com/dude1wudv/cursor-sub2api-byok/actions/runs/37946164373) 全部通过，验证代码提交 `6ea8a4868bc92e3ae3aaed3cee21297bb45f60f3`。后续仅更新文档，不重复运行相同代码验证。五个 GitHub Release 附件的服务端 SHA256 均与本地文件相符。
 
 运行 `scripts/verify-portable.cjs EXE EVIDENCE_DIRECTORY PLAYWRIGHT_PACKAGE` 需要完全退出 Cursor，并由用户确认首次 Windows 证书安装与最终删除。检查日常多次开关、强制终止、离线恢复、启动恢复和窗口退出期间证书始终保留，显式卸载后 Root 集合回到基线；同时检查 settings 字节与 state.vscdb 哨兵。
 

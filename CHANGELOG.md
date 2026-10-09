@@ -9,7 +9,7 @@
 - DPAPI 保存同意版本、时间及证书 DER；损坏记录不覆盖，删除失败可重试。
 - 修复旧 CI 路径测试对 Windows 8.3 短路径的错误比较。
 
-真实 Cursor/GPT/Claude/MCP 闭环仍未验收。MicroEduLab 为维护者署名，EXE 未做 Authenticode 签名。
+验证：233 项 Rust 测试、前端与浏览器交互、Windows no-bundle 构建、GitHub CI 及实际 EXE 持续证书信任隔离恢复通过。真实 Cursor/GPT/Claude/MCP 闭环仍未验收。MicroEduLab 为维护者署名，EXE 未做 Authenticode 签名。
 
 ## 0.1.0 — 2026-10-09
 
