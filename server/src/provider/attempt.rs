@@ -89,7 +89,10 @@ mod tests {
     async fn request_transport_failure_is_one_failed_attempt() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        drop(listener);
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        });
         let url = format!("http://{address}");
         let client = reqwest::Client::new();
         let error = send_once("test", || client.get(&url), &CancellationToken::new(), None)

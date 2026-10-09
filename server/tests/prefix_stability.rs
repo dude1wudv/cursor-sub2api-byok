@@ -376,7 +376,11 @@ fn every_captured_mode_owns_and_renders_its_runtime_template() {
         (Mode::Debug, "You are now in **DEBUG MODE**"),
         (Mode::Multitask, "The user has engaged **Multitask Mode**"),
     ] {
-        let rendered = compiler.runtime_message(mode, &values).unwrap();
+        // Git on Windows checks out the unchanged upstream templates with CRLF.
+        let rendered = compiler
+            .runtime_message(mode, &values)
+            .unwrap()
+            .replace("\r\n", "\n");
         assert!(rendered.contains(marker), "missing {mode:?} marker");
         assert!(rendered.contains("<user_query>\nquestion\n</user_query>"));
         assert_eq!(rendered.matches("<user_query>").count(), 1);

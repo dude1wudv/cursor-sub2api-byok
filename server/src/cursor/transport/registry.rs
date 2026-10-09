@@ -64,24 +64,7 @@ impl TransportRegistry {
         compiler: PromptCompiler,
         web_cache: WebCache,
     ) -> Self {
-        Self::build(store, provider, compiler, web_cache, None, None)
-    }
-
-    /// 附带本地 rules 目录的构造;编译请求上下文时会合并该目录下的 md 规则。
-    pub fn with_local_rules(
-        store: Store,
-        provider: Arc<dyn Provider>,
-        compiler: PromptCompiler,
-        local_rules_dir: std::path::PathBuf,
-    ) -> Self {
-        Self::build(
-            store,
-            provider,
-            compiler,
-            WebCache::default(),
-            None,
-            Some(local_rules_dir),
-        )
+        Self::build(store, provider, compiler, web_cache, None)
     }
 
     pub fn with_plugins(
@@ -90,16 +73,8 @@ impl TransportRegistry {
         compiler: PromptCompiler,
         web_cache: WebCache,
         plugins: PluginRegistry,
-        local_rules_dir: std::path::PathBuf,
     ) -> Self {
-        Self::build(
-            store,
-            provider,
-            compiler,
-            web_cache,
-            Some(plugins),
-            Some(local_rules_dir),
-        )
+        Self::build(store, provider, compiler, web_cache, Some(plugins))
     }
 
     fn build(
@@ -108,7 +83,6 @@ impl TransportRegistry {
         compiler: PromptCompiler,
         web_cache: WebCache,
         plugins: Option<PluginRegistry>,
-        local_rules_dir: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             inner: Arc::new(RegistryInner {
@@ -122,7 +96,6 @@ impl TransportRegistry {
                     provider,
                     compiler,
                     web_cache.clone(),
-                    local_rules_dir,
                 ),
                 store,
                 web_cache,

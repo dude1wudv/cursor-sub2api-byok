@@ -26,3 +26,8 @@ pub async fn set_enabled(
         service.cursor_harness().set_enabled(input.enabled).await?,
     ))
 }
+
+pub async fn recover(State(service): State<ControlService>) -> Result<Json<CursorHarnessStatus>> {
+    service.cursor_harness().recover_pending().await?;
+    Ok(Json(service.cursor_harness().status().await?))
+}

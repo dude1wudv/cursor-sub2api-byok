@@ -100,6 +100,18 @@ impl PluginRuntimeStatus {
 }
 
 impl PluginRuntime {
+    pub fn disabled() -> Self {
+        Self {
+            inner: Arc::new(PluginRuntimeInner {
+                root: PathBuf::new(),
+                asset: None,
+                status: RwLock::new(PluginRuntimeStatus::unsupported()),
+                initializing: AtomicBool::new(false),
+                cancellation: Mutex::new(None),
+            }),
+        }
+    }
+
     pub fn managed() -> Result<Self> {
         Self::new(config::managed_data_dir()?.join("plugins").join("runtime"))
     }

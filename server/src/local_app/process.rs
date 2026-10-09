@@ -1,4 +1,4 @@
-//! Terminates the Cursor desktop process before an explicit takeover.
+//! Read-only Cursor process detection used to guard reversible transitions.
 
 use tokio::process::Command;
 
@@ -12,80 +12,54 @@ fn hide_console(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
-pub async fn terminate_cursor() -> Result<()> {
-    terminate_platform_cursor().await
-}
-
-#[cfg(target_os = "macos")]
-async fn terminate_platform_cursor() -> Result<()> {
-    terminate_unix_process("Cursor").await
-}
-
-#[cfg(target_os = "linux")]
-async fn terminate_platform_cursor() -> Result<()> {
-    terminate_unix_process("cursor").await?;
-    terminate_unix_process("Cursor").await
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-async fn terminate_unix_process(name: &str) -> Result<()> {
-    let running = Command::new("pgrep").args(["-x", name]).status().await?;
-    if !running.success() {
-        return match running.code() {
-            Some(1) => Ok(()),
-            _ => Err(Error::Config(format!(
-                "failed to inspect the {name} process"
-            ))),
-        };
-    }
-    let terminated = Command::new("pkill").args(["-x", name]).status().await?;
-    if terminated.success() || terminated.code() == Some(1) {
-        Ok(())
-    } else {
-        Err(Error::Config(format!(
-            "failed to terminate the {name} process"
-        )))
-    }
+pub async fn cursor_running() -> Result<bool> {
+    cursor_running_platform().await
 }
 
 #[cfg(target_os = "windows")]
-async fn terminate_platform_cursor() -> Result<()> {
+async fn cursor_running_platform() -> Result<bool> {
     let mut list = Command::new("tasklist");
     hide_console(&mut list);
-    let processes = list
+    let output = list
         .args(["/FI", "IMAGENAME eq Cursor.exe", "/NH", "/FO", "CSV"])
         .output()
         .await?;
-    if !processes.status.success() {
+    if !output.status.success() {
         return Err(Error::Config(
             "failed to inspect the Cursor.exe process".into(),
         ));
     }
-    if !String::from_utf8_lossy(&processes.stdout)
+    Ok(String::from_utf8_lossy(&output.stdout)
         .to_ascii_lowercase()
-        .contains("cursor.exe")
-    {
-        return Ok(());
-    }
-    let mut kill = Command::new("taskkill");
-    hide_console(&mut kill);
-    let terminated = kill
-        .args(["/F", "/T", "/IM", "Cursor.exe"])
-        .status()
-        .await?;
-    if terminated.success() {
-        Ok(())
-    } else {
-        Err(Error::Config(
-            "failed to terminate the Cursor.exe process".into(),
-        ))
+        .contains("cursor.exe"))
+}
+
+#[cfg(target_os = "macos")]
+async fn cursor_running_platform() -> Result<bool> {
+    process_running("Cursor").await
+}
+
+#[cfg(target_os = "linux")]
+async fn cursor_running_platform() -> Result<bool> {
+    Ok(process_running("cursor").await? || process_running("Cursor").await?)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn process_running(name: &str) -> Result<bool> {
+    let status = Command::new("pgrep").args(["-x", name]).status().await?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(Error::Config(format!(
+            "failed to inspect the {name} process"
+        ))),
     }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-async fn terminate_platform_cursor() -> Result<()> {
+async fn cursor_running_platform() -> Result<bool> {
     Err(Error::Config(format!(
-        "terminating Cursor is unsupported on {}",
+        "Cursor process inspection is unsupported on {}",
         std::env::consts::OS
     )))
 }

@@ -146,37 +146,6 @@ async fn decode_part<T: Message + Default>(
         .map_err(|error| Error::Protocol(format!("invalid {name} context Blob: {error}")))
 }
 
-/// 把本地 md 规则目录(rules 服务的存储)合并进请求上下文,
-/// 使 BYOK 运行在 IDE 未携带这些规则时也能消费它们。
-/// 与 IDE 已发规则按内容去重;读取失败只告警,不影响运行。
-pub fn merge_local_rules(context: &mut pb::RequestContext, rules_dir: &Path) {
-    let records = match crate::cursor::services::knowledge::RuleStore::open(rules_dir.into())
-        .and_then(|store| store.list())
-    {
-        Ok(records) => records,
-        Err(error) => {
-            tracing::warn!(%error, "cannot read local rules; continuing without them");
-            return;
-        }
-    };
-    let existing = context
-        .rules
-        .iter()
-        .chain(context.non_file_rules.iter())
-        .map(|rule| rule.content.trim().to_owned())
-        .chain(context.cloud_rule.iter().map(|rule| rule.trim().to_owned()))
-        .collect::<HashSet<_>>();
-    for record in records {
-        if record.knowledge.trim().is_empty() || existing.contains(record.knowledge.trim()) {
-            continue;
-        }
-        context.non_file_rules.push(pb::CursorRule {
-            content: record.knowledge,
-            ..Default::default()
-        });
-    }
-}
-
 pub fn request_context(request: &pb::AgentRunRequest) -> Option<&pb::RequestContext> {
     let action = request.action.as_ref()?;
     action
@@ -581,49 +550,4 @@ fn xml(value: &str) -> String {
         .replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rule(content: &str) -> pb::CursorRule {
-        pb::CursorRule {
-            content: content.into(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn merge_local_rules_appends_and_dedupes_by_content() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("a.md"), "shared rule").unwrap();
-        std::fs::write(directory.path().join("b.md"), "local only rule").unwrap();
-        std::fs::write(directory.path().join("c.md"), "   \n").unwrap();
-
-        let mut context = pb::RequestContext {
-            non_file_rules: vec![rule("  shared rule  ")],
-            ..Default::default()
-        };
-        merge_local_rules(&mut context, directory.path());
-
-        let contents = context
-            .non_file_rules
-            .iter()
-            .map(|rule| rule.content.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            contents,
-            ["  shared rule  ", "local only rule"],
-            "IDE-sent duplicate is kept once and blank local rules are skipped"
-        );
-    }
-
-    #[test]
-    fn merge_local_rules_survives_a_missing_directory() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut context = pb::RequestContext::default();
-        merge_local_rules(&mut context, &directory.path().join("nested/rules"));
-        assert!(context.non_file_rules.is_empty());
-    }
 }

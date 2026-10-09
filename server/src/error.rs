@@ -39,11 +39,14 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("{message}")]
+    ControllerConflict { code: &'static str, message: String },
 }
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let status = match self {
+        let status = match &self {
+            Self::ControllerConflict { .. } => StatusCode::CONFLICT,
             Self::Config(_) | Self::Protocol(_) | Self::Decode(_) | Self::Json(_) => {
                 StatusCode::BAD_REQUEST
             }
@@ -57,14 +60,16 @@ impl IntoResponse for Error {
             | Self::Encode(_)
             | Self::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        // 所有回给 UI 的错误统一落日志,否则失败原因只出现在前端提示里。
         tracing::warn!(%status, error = %self, "request failed");
-        let code = match status {
-            StatusCode::BAD_REQUEST => "invalid_argument",
-            StatusCode::NOT_FOUND => "not_found",
-            StatusCode::CONFLICT => "aborted",
-            StatusCode::BAD_GATEWAY => "unavailable",
-            _ => "internal",
+        let code = match &self {
+            Self::ControllerConflict { code, .. } => *code,
+            _ => match status {
+                StatusCode::BAD_REQUEST => "invalid_argument",
+                StatusCode::NOT_FOUND => "not_found",
+                StatusCode::CONFLICT => "aborted",
+                StatusCode::BAD_GATEWAY => "unavailable",
+                _ => "internal",
+            },
         };
         (
             status,

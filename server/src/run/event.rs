@@ -47,6 +47,7 @@ impl From<crate::Error> for RunFailure {
             Error::Encode(error) => Self::Protocol(error.to_string()),
             Error::Json(error) => Self::Protocol(error.to_string()),
             Error::RunNotFound(run_id) => Self::Store(format!("run not found: {run_id}")),
+            Error::ControllerConflict { message, .. } => Self::Store(message),
         }
     }
 }

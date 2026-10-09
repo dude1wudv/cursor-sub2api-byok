@@ -1,5 +1,5 @@
 //! Persists application settings.
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::Result;
 
@@ -7,30 +7,13 @@ use super::{now_ms, Store};
 
 const PORT_SETTINGS_KEY: &str = "network_ports";
 const PROXY_SETTINGS_KEY: &str = "outbound_proxy";
-const TAB_SETTINGS_KEY: &str = "cursor_tab";
-const INSTALLATION_ID_KEY: &str = "installation_id";
-const DESKTOP_SETTINGS_KEY: &str = "desktop_lifecycle";
-const COMMIT_SETTINGS_KEY: &str = "commit_settings";
 const CURSOR_TAKEOVER_ENABLED_KEY: &str = "cursor_takeover_enabled";
 const PRICING_SETTINGS_KEY: &str = "token_pricing";
-const EXTERNAL_API_SETTINGS_KEY: &str = "external_api";
-
-/// Embedded default system prompts for commit message generation.
-pub const DEFAULT_COMMIT_PROMPT_ZH_CN: &str = include_str!("../../prompt/cursor/commit/zh-CN.md");
-pub const DEFAULT_COMMIT_PROMPT_EN_US: &str = include_str!("../../prompt/cursor/commit/en-US.md");
-
-pub const PUBLIC_TAB_SERVICE_URL: &str = "https://tab.leokun.cn";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct PortSettings {
     pub proxy_port: u16,
     pub service_port: u16,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-pub struct ExternalApiSettings {
-    pub enabled: bool,
-    pub api_key: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -63,115 +46,6 @@ pub enum ProxyMode {
 impl ProxyMode {
     pub fn is_custom(self) -> bool {
         self == Self::Custom
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TabMode {
-    #[default]
-    Public,
-    Direct,
-    Custom,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-pub struct TabSettings {
-    pub mode: TabMode,
-    pub address: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-pub struct DesktopSettings {
-    #[serde(default)]
-    pub silent_start: bool,
-    #[serde(default = "default_true")]
-    pub show_dock_icon: bool,
-}
-
-impl Default for DesktopSettings {
-    fn default() -> Self {
-        Self {
-            silent_start: false,
-            show_dock_icon: true,
-        }
-    }
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl TabSettings {
-    pub fn service_url(&self) -> Option<&str> {
-        match self.mode {
-            TabMode::Public => Some(PUBLIC_TAB_SERVICE_URL),
-            TabMode::Direct => None,
-            TabMode::Custom => Some(&self.address),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub enum CommitPromptLocale {
-    #[default]
-    #[serde(rename = "zh-CN")]
-    ZhCn,
-    #[serde(rename = "en-US")]
-    EnUs,
-}
-
-impl CommitPromptLocale {
-    pub fn from_interface_language(value: &str) -> Self {
-        if value.eq_ignore_ascii_case("zh-CN") {
-            Self::ZhCn
-        } else {
-            Self::EnUs
-        }
-    }
-
-    pub fn default_prompt(self) -> &'static str {
-        match self {
-            Self::ZhCn => DEFAULT_COMMIT_PROMPT_ZH_CN.trim(),
-            Self::EnUs => DEFAULT_COMMIT_PROMPT_EN_US.trim(),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for CommitPromptLocale {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        Ok(Self::from_interface_language(&value))
-    }
-}
-
-/// User preferences for Git commit message generation.
-///
-/// Empty `model_id` means 直连: forward the original Cursor RPC unchanged.
-/// A non-empty value is the stable identifier of a configured built-in or
-/// plugin model, and the request is generated locally through that model.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-pub struct CommitSettings {
-    #[serde(default)]
-    pub model_id: String,
-    #[serde(default)]
-    pub prompt: String,
-    #[serde(default)]
-    pub prompt_locale: CommitPromptLocale,
-}
-
-impl CommitSettings {
-    pub fn is_direct(&self) -> bool {
-        self.model_id.trim().is_empty()
-    }
-
-    pub fn effective_prompt(&self) -> &str {
-        let trimmed = self.prompt.trim();
-        if trimmed.is_empty() {
-            self.prompt_locale.default_prompt()
-        } else {
-            trimmed
-        }
     }
 }
 
@@ -219,51 +93,6 @@ fn read_proxy_settings(value: &str) -> ProxySettingsSecret {
 }
 
 impl Store {
-    pub async fn external_api_settings(&self) -> Result<ExternalApiSettings> {
-        let value = sqlx::query_scalar::<_, String>(
-            "SELECT value_json FROM service_settings WHERE setting_key = ?",
-        )
-        .bind(EXTERNAL_API_SETTINGS_KEY)
-        .fetch_optional(&self.pool)
-        .await?;
-        value
-            .map(|value| serde_json::from_str(&value).map_err(Into::into))
-            .unwrap_or_else(|| Ok(ExternalApiSettings::default()))
-    }
-
-    pub async fn set_external_api_settings(
-        &self,
-        mut settings: ExternalApiSettings,
-    ) -> Result<ExternalApiSettings> {
-        settings.api_key = settings.api_key.trim().to_owned();
-        if settings.enabled && settings.api_key.is_empty() {
-            return Err(crate::Error::Config(
-                "external API key is required when enabled".into(),
-            ));
-        }
-        let value_json = serde_json::to_string(&settings)?;
-        let _write = self.writes.lock().await;
-        sqlx::query("INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms")
-            .bind(EXTERNAL_API_SETTINGS_KEY)
-            .bind(value_json)
-            .bind(now_ms())
-            .execute(&self.pool)
-            .await?;
-        Ok(settings)
-    }
-
-    pub(crate) async fn cursor_takeover_enabled(&self) -> Result<bool> {
-        let value = sqlx::query_scalar::<_, String>(
-            "SELECT value_json FROM service_settings WHERE setting_key = ?",
-        )
-        .bind(CURSOR_TAKEOVER_ENABLED_KEY)
-        .fetch_optional(&self.pool)
-        .await?;
-        value
-            .map(|value| serde_json::from_str(&value).map_err(Into::into))
-            .unwrap_or(Ok(true))
-    }
-
     pub(crate) async fn set_cursor_takeover_enabled(&self, enabled: bool) -> Result<()> {
         let value_json = serde_json::to_string(&enabled)?;
         let _write = self.writes.lock().await;
@@ -276,30 +105,6 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
-    }
-
-    pub(crate) async fn installation_id(&self) -> Result<String> {
-        let generated = uuid::Uuid::new_v4().to_string();
-        let _write = self.writes.lock().await;
-        sqlx::query(
-            "INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO NOTHING",
-        )
-        .bind(INSTALLATION_ID_KEY)
-        .bind(serde_json::to_string(&generated)?)
-        .bind(now_ms())
-        .execute(&self.pool)
-        .await?;
-        let value = sqlx::query_scalar::<_, String>(
-            "SELECT value_json FROM service_settings WHERE setting_key = ?",
-        )
-        .bind(INSTALLATION_ID_KEY)
-        .fetch_one(&self.pool)
-        .await?;
-        let installation_id = serde_json::from_str::<String>(&value)?;
-        uuid::Uuid::parse_str(&installation_id).map_err(|error| {
-            crate::Error::Store(format!("invalid persisted installation ID: {error}"))
-        })?;
-        Ok(installation_id)
     }
 
     pub(crate) async fn proxy_settings_secret(&self) -> Result<ProxySettingsSecret> {
@@ -364,49 +169,6 @@ impl Store {
         self.proxy_settings().await
     }
 
-    pub async fn tab_settings(&self) -> Result<TabSettings> {
-        let value = sqlx::query_scalar::<_, String>(
-            "SELECT value_json FROM service_settings WHERE setting_key = ?",
-        )
-        .bind(TAB_SETTINGS_KEY)
-        .fetch_optional(&self.pool)
-        .await?;
-        value
-            .map(|value| serde_json::from_str(&value).map_err(Into::into))
-            .unwrap_or_else(|| Ok(TabSettings::default()))
-    }
-
-    pub async fn set_tab_settings(&self, mut settings: TabSettings) -> Result<TabSettings> {
-        settings.address = settings.address.trim().trim_end_matches('/').to_owned();
-        if settings.mode == TabMode::Custom {
-            let parsed = url::Url::parse(&settings.address).map_err(|error| {
-                crate::Error::Config(format!("invalid TAB service address: {error}"))
-            })?;
-            if !matches!(parsed.scheme(), "http" | "https") {
-                return Err(crate::Error::Config(
-                    "TAB service address must use http or https".into(),
-                ));
-            }
-            if parsed.host_str().is_none()
-                || parsed.query().is_some()
-                || parsed.fragment().is_some()
-            {
-                return Err(crate::Error::Config(
-                    "TAB service address must be a base URL without a query or fragment".into(),
-                ));
-            }
-        }
-        let value_json = serde_json::to_string(&settings)?;
-        let _write = self.writes.lock().await;
-        sqlx::query("INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms")
-            .bind(TAB_SETTINGS_KEY)
-            .bind(value_json)
-            .bind(now_ms())
-            .execute(&self.pool)
-            .await?;
-        Ok(settings)
-    }
-
     pub async fn port_settings(&self) -> Result<PortSettings> {
         let value = sqlx::query_scalar::<_, String>(
             "SELECT value_json FROM service_settings WHERE setting_key = ?",
@@ -445,63 +207,6 @@ impl Store {
         self.set_port_settings(settings).await
     }
 
-    pub async fn desktop_settings(&self) -> Result<DesktopSettings> {
-        let value = sqlx::query_scalar::<_, String>(
-            "SELECT value_json FROM service_settings WHERE setting_key = ?",
-        )
-        .bind(DESKTOP_SETTINGS_KEY)
-        .fetch_optional(&self.pool)
-        .await?;
-        value
-            .map(|value| serde_json::from_str(&value).map_err(Into::into))
-            .unwrap_or_else(|| Ok(DesktopSettings::default()))
-    }
-
-    pub async fn set_desktop_settings(&self, settings: DesktopSettings) -> Result<()> {
-        let value_json = serde_json::to_string(&settings)?;
-        let _write = self.writes.lock().await;
-        sqlx::query(
-            "INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms",
-        )
-        .bind(DESKTOP_SETTINGS_KEY)
-        .bind(value_json)
-        .bind(now_ms())
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn commit_settings(&self) -> Result<CommitSettings> {
-        let value = sqlx::query_scalar::<_, String>(
-            "SELECT value_json FROM service_settings WHERE setting_key = ?",
-        )
-        .bind(COMMIT_SETTINGS_KEY)
-        .fetch_optional(&self.pool)
-        .await?;
-        value
-            .map(|value| serde_json::from_str(&value).map_err(Into::into))
-            .unwrap_or_else(|| Ok(CommitSettings::default()))
-    }
-
-    pub async fn set_commit_settings(&self, settings: CommitSettings) -> Result<CommitSettings> {
-        let settings = CommitSettings {
-            model_id: settings.model_id.trim().to_owned(),
-            prompt: settings.prompt.trim().to_owned(),
-            prompt_locale: settings.prompt_locale,
-        };
-        let value_json = serde_json::to_string(&settings)?;
-        let _write = self.writes.lock().await;
-        sqlx::query(
-            "INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms",
-        )
-        .bind(COMMIT_SETTINGS_KEY)
-        .bind(value_json)
-        .bind(now_ms())
-        .execute(&self.pool)
-        .await?;
-        Ok(settings)
-    }
-
     pub async fn pricing_settings(&self) -> Result<TokenPricingSettings> {
         let value = sqlx::query_scalar::<_, String>(
             "SELECT value_json FROM service_settings WHERE setting_key = ?",
@@ -535,61 +240,14 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::{
-        read_proxy_settings, CommitPromptLocale, CommitSettings, ExternalApiSettings, ProxyMode,
-        ProxySettingsInput, ProxySettingsSecret, Store, TokenPricingSettings,
-        DEFAULT_COMMIT_PROMPT_EN_US, DEFAULT_COMMIT_PROMPT_ZH_CN, PROXY_SETTINGS_KEY,
+        read_proxy_settings, ProxyMode, ProxySettingsInput, ProxySettingsSecret, Store,
+        TokenPricingSettings, PROXY_SETTINGS_KEY,
     };
 
     /// The `outbound_proxy` row exactly as builds before the `system` -> `default`
     /// rename wrote it.
     const LEGACY_PROXY_ROW: &str =
         r#"{"mode":"system","address":"","auth_enabled":false,"username":"","password":""}"#;
-
-    #[test]
-    fn commit_prompt_locale_maps_unknown_interface_languages_to_english() {
-        assert_eq!(
-            serde_json::from_str::<CommitPromptLocale>(r#""zh-CN""#).unwrap(),
-            CommitPromptLocale::ZhCn
-        );
-        assert_eq!(
-            serde_json::from_str::<CommitPromptLocale>(r#""en-US""#).unwrap(),
-            CommitPromptLocale::EnUs
-        );
-        assert_eq!(
-            serde_json::from_str::<CommitPromptLocale>(r#""pt-BR""#).unwrap(),
-            CommitPromptLocale::EnUs
-        );
-        assert_eq!(
-            serde_json::to_string(&CommitPromptLocale::EnUs).unwrap(),
-            r#""en-US""#
-        );
-    }
-
-    #[test]
-    fn default_commit_prompt_follows_its_saved_locale() {
-        for (prompt_locale, expected) in [
-            (CommitPromptLocale::ZhCn, DEFAULT_COMMIT_PROMPT_ZH_CN),
-            (CommitPromptLocale::EnUs, DEFAULT_COMMIT_PROMPT_EN_US),
-        ] {
-            let settings = CommitSettings {
-                prompt_locale,
-                ..CommitSettings::default()
-            };
-            assert_eq!(settings.effective_prompt(), expected.trim());
-        }
-    }
-
-    #[test]
-    fn custom_commit_prompt_does_not_change_with_locale() {
-        for prompt_locale in [CommitPromptLocale::ZhCn, CommitPromptLocale::EnUs] {
-            let settings = CommitSettings {
-                prompt: "custom prompt".into(),
-                prompt_locale,
-                ..CommitSettings::default()
-            };
-            assert_eq!(settings.effective_prompt(), "custom prompt");
-        }
-    }
 
     #[test]
     fn default_proxy_mode_uses_the_default_wire_value() {
@@ -671,44 +329,5 @@ mod tests {
         assert_eq!(saved, custom);
 
         assert_eq!(store.pricing_settings().await.unwrap(), custom);
-    }
-
-    #[tokio::test]
-    async fn external_api_requires_a_key_and_persists_its_switch() {
-        let directory = tempfile::tempdir().unwrap();
-        let url = format!("sqlite://{}", directory.path().join("test.db").display());
-        let store = Store::connect(&url).await.unwrap();
-
-        assert_eq!(
-            store.external_api_settings().await.unwrap(),
-            ExternalApiSettings::default()
-        );
-        assert!(store
-            .set_external_api_settings(ExternalApiSettings {
-                enabled: true,
-                api_key: String::new(),
-            })
-            .await
-            .is_err());
-        let settings = ExternalApiSettings {
-            enabled: true,
-            api_key: "local-test-key".into(),
-        };
-        assert_eq!(
-            store
-                .set_external_api_settings(settings.clone())
-                .await
-                .unwrap(),
-            settings
-        );
-        assert_eq!(
-            Store::connect(&url)
-                .await
-                .unwrap()
-                .external_api_settings()
-                .await
-                .unwrap(),
-            settings
-        );
     }
 }

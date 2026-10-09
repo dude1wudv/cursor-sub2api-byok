@@ -13,7 +13,7 @@ use crate::{
         transport::TransportRegistry,
     },
     local_app::CursorHarness,
-    plugin::{PluginRegistry, PluginRuntime},
+    plugin::PluginRegistry,
     provider::ProviderRouter,
     search::WebCache,
     store::Store,
@@ -26,10 +26,12 @@ pub struct App {
     registry: TransportRegistry,
     harness: CursorHarness,
     store: Store,
+    auth: control::auth::ControlAuth,
 }
 
 impl App {
     pub async fn new(mut config: Config) -> Result<Self> {
+        std::fs::create_dir_all(&config.runtime_paths.data_dir)?;
         let store = Store::connect(&config.database_url).await?;
         if config.use_persisted_ports {
             config
@@ -38,12 +40,7 @@ impl App {
         }
         let assets = PromptAssets::embedded()?;
         let compiler = PromptCompiler::new(assets);
-        let plugin_runtime = PluginRuntime::managed()?;
-        let plugins = PluginRegistry::managed(
-            store.clone(),
-            plugin_runtime.clone(),
-            config.app_version.clone(),
-        )?;
+        let plugins = PluginRegistry::empty(store.clone());
         let clients = crate::network::NetworkClients::new(store.clone());
         let provider = std::sync::Arc::new(ProviderRouter::new(
             store.clone(),
@@ -52,35 +49,16 @@ impl App {
             config.provider_request_timeout,
             config.provider_stream_idle_timeout,
         ));
-        let byok = api::byok::router(
-            store.clone(),
-            plugins.clone(),
-            provider.clone(),
-            Some(api::byok::NativeForwarder::new(
-                store.clone(),
-                clients.clone(),
-                config.provider_request_timeout,
-                config.provider_stream_idle_timeout,
-            )),
-        );
         let registry = TransportRegistry::with_plugins(
             store.clone(),
             provider.clone(),
             compiler,
-            WebCache::managed()?,
+            WebCache::at(config.runtime_paths.data_dir.join("cache/web"))?,
             plugins.clone(),
-            crate::config::managed_data_dir()?.join("rules"),
         );
-        let control = control::ControlService::new(
-            store.clone(),
-            provider,
-            plugin_runtime,
-            plugins,
-            clients.clone(),
-            config.app_version.clone(),
-        )?;
+        let control = control::ControlService::new(store.clone(), provider, &config.runtime_paths)?;
         let harness = control.cursor_harness().clone();
-        let mut router = api::router(registry.clone(), clients)?.merge(byok);
+        let mut router = api::router(registry.clone(), clients)?;
         router = match &config.console {
             Some(ConsoleSource::Directory(directory)) => {
                 router.merge(control::web_router(control.clone(), directory))
@@ -96,7 +74,12 @@ impl App {
             harness,
             store,
             config,
+            auth: control::auth::ControlAuth::new(),
         })
+    }
+
+    pub fn control_token(&self) -> &str {
+        self.auth.token()
     }
 
     pub fn merge_router(mut self, router: axum::Router) -> Self {
@@ -112,6 +95,7 @@ impl App {
                 .set_service_port(listener.local_addr()?.port())
                 .await?;
         }
+        self.auth.bind(listener.local_addr()?);
         Ok(listener)
     }
 
@@ -147,11 +131,17 @@ impl App {
         let registry = self.registry;
         let harness = self.harness;
         let graceful = shutdown.clone();
-        let server = axum::serve(listener, self.router)
-            .with_graceful_shutdown(async move {
-                graceful.cancelled().await;
-            })
-            .into_future();
+        let server = axum::serve(
+            listener,
+            self.router.layer(axum::middleware::from_fn_with_state(
+                self.auth,
+                control::auth::protect,
+            )),
+        )
+        .with_graceful_shutdown(async move {
+            graceful.cancelled().await;
+        })
+        .into_future();
         tokio::pin!(server);
 
         tokio::select! {

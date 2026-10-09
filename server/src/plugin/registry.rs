@@ -133,6 +133,20 @@ pub struct PluginInvocationPlan {
 }
 
 impl PluginRegistry {
+    pub fn empty(store: Store) -> Self {
+        Self {
+            inner: Arc::new(RegistryInner {
+                store,
+                runtime: PluginRuntime::disabled(),
+                catalog: PluginCatalog::empty(),
+                state: PluginStateStore::new(PluginDataStore::empty()),
+                entries: RwLock::new(Some(vec![])),
+                workers: Mutex::new(HashMap::new()),
+                oauth_sessions: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
     pub fn managed(store: Store, runtime: PluginRuntime, app_version: String) -> Result<Self> {
         let data = PluginDataStore::managed()?;
         Ok(Self {

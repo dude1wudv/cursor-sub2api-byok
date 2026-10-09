@@ -17,6 +17,13 @@ pub struct PluginDataStore {
 }
 
 impl PluginDataStore {
+    pub(super) fn empty() -> Self {
+        Self {
+            root: PathBuf::new(),
+            locks: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
     pub fn managed() -> Result<Self> {
         Self::new(config::managed_data_dir()?.join("plugins/data"))
     }

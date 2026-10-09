@@ -58,6 +58,7 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 x509-parser = "0.18"
 zip = { version = "4", default-features = false, features = ["deflate"] }
+jsonc-parser = { version = "=0.26.2", features = ["cst", "serde"] }
 [build-dependencies]
 prost-build = "0.13"
 protoc-bin-vendored = "3"
@@ -68,4 +69,4 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_Security"] }

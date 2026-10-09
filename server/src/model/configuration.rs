@@ -82,7 +82,7 @@ impl FromStr for ModelType {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct ModelConfigInput {
     #[serde(default)]
     pub sort_order: i64,
@@ -95,6 +95,7 @@ pub struct ModelConfigInput {
     pub base_url: String,
     #[serde(default)]
     pub use_full_url: bool,
+    #[serde(skip_serializing)]
     pub api_key: String,
     pub tooltip_data: String,
     pub model_id: String,
@@ -122,7 +123,7 @@ pub struct ModelConfigInput {
     pub thinking_budget_tokens: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct ModelConfig {
     pub model_hash: String,
     pub sort_order: i64,
@@ -132,6 +133,7 @@ pub struct ModelConfig {
     pub model_type: ModelType,
     pub base_url: String,
     pub use_full_url: bool,
+    #[serde(skip_serializing)]
     pub api_key: String,
     pub tooltip_data: String,
     pub model_id: String,
@@ -220,13 +222,7 @@ pub fn normalize_model_input(input: &ModelConfigInput) -> Result<ModelConfigInpu
     let model_id = required(&input.model_id, "model id")?;
     let reasoning_effort = normalize_effort(input.reasoning_effort.as_deref(), true)?;
     let anthropic_thinking_effort = match input.model_type {
-        ModelType::Anthropic => Some(
-            normalize_effort(
-                input.anthropic_thinking_effort.as_deref().or(Some("xhigh")),
-                false,
-            )?
-            .expect("Anthropic effort has a default"),
-        ),
+        ModelType::Anthropic => normalize_effort(input.anthropic_thinking_effort.as_deref(), true)?,
         ModelType::OpenAi => None,
     };
     let openai_endpoint = match input.model_type {
@@ -475,5 +471,22 @@ impl ModelSpec {
             supports_image_generation: false,
             extra_params: serde_json::json!({}),
         }
+    }
+}
+
+impl fmt::Debug for ModelConfigInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelConfigInput")
+            .field("model_id", &self.model_id)
+            .field("api_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+impl fmt::Debug for ModelConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelConfig")
+            .field("model_hash", &self.model_hash)
+            .field("api_key", &"[REDACTED]")
+            .finish_non_exhaustive()
     }
 }

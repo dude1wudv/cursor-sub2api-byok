@@ -6,19 +6,14 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::{
-    model::{ModelConfig, ModelConfigInput},
-    Result,
-};
+use crate::{model::ModelConfig, store::Sub2ApiModelInput, Result};
 
-use super::{
-    ControlService, DiscoveredModels, LegacyModelImportPreview, LegacyModelImportResult,
-    ModelConnectivityResult, ModelDiscoveryInput,
-};
+use super::{ControlService, ModelConnectivityResult};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SaveModels {
-    pub models: Vec<ModelConfigInput>,
+    pub models: Vec<Sub2ApiModelInput>,
 }
 
 #[derive(Deserialize)]
@@ -32,8 +27,10 @@ pub async fn list(State(service): State<ControlService>) -> Result<Json<Vec<Mode
 
 pub async fn create(
     State(service): State<ControlService>,
-    Json(input): Json<SaveModels>,
+    input: std::result::Result<Json<SaveModels>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(StatusCode, Json<Vec<ModelConfig>>)> {
+    let Json(input) =
+        input.map_err(|_| crate::Error::Config("invalid Sub2API model input".into()))?;
     Ok((
         StatusCode::CREATED,
         Json(service.create_models(&input.models).await?),
@@ -58,8 +55,10 @@ pub async fn remove(
 pub async fn update(
     State(service): State<ControlService>,
     Path(model_hash): Path<String>,
-    Json(input): Json<ModelConfigInput>,
+    input: std::result::Result<Json<Sub2ApiModelInput>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<ModelConfig>> {
+    let Json(input) =
+        input.map_err(|_| crate::Error::Config("invalid Sub2API model input".into()))?;
     Ok(Json(service.update_model(&model_hash, &input).await?))
 }
 
@@ -76,23 +75,4 @@ pub async fn cancel(
 ) -> Result<StatusCode> {
     service.cancel_model_test(&test_id);
     Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn discover(
-    State(service): State<ControlService>,
-    Json(input): Json<ModelDiscoveryInput>,
-) -> Result<Json<DiscoveredModels>> {
-    Ok(Json(service.discover_models(&input).await?))
-}
-
-pub async fn import_v0049(
-    State(service): State<ControlService>,
-) -> Result<Json<LegacyModelImportResult>> {
-    Ok(Json(service.import_v0049_models().await?))
-}
-
-pub async fn preview_v0049(
-    State(service): State<ControlService>,
-) -> Result<Json<LegacyModelImportPreview>> {
-    Ok(Json(service.preview_v0049_models().await?))
 }

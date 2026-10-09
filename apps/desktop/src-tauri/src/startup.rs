@@ -9,7 +9,7 @@ use tracing_appender::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 const LOG_DIRECTORY_NAME: &str = "logs";
-const LOG_FILE_PREFIX: &str = "cursor-byok";
+const LOG_FILE_PREFIX: &str = "cursor-sub2api-byok";
 const LOG_FILE_SUFFIX: &str = "log";
 const RETAINED_LOG_FILES: usize = 15;
 
@@ -21,8 +21,8 @@ pub(crate) struct StartupDiagnostics {
 }
 
 impl StartupDiagnostics {
-    pub(crate) fn initialize() -> Result<Self, BoxError> {
-        let log_directory = cursor_server::config::managed_data_dir()?.join(LOG_DIRECTORY_NAME);
+    pub(crate) fn initialize(data_dir: &std::path::Path) -> Result<Self, BoxError> {
+        let log_directory = data_dir.join(LOG_DIRECTORY_NAME);
         std::fs::create_dir_all(&log_directory)?;
 
         let file_appender = RollingFileAppender::builder()
@@ -51,10 +51,6 @@ impl StartupDiagnostics {
         })
     }
 
-    pub(crate) fn log_directory(&self) -> &std::path::Path {
-        &self.log_directory
-    }
-
     pub(crate) fn report_fatal(&self, error: &(dyn Error + 'static)) {
         let details = error_chain(error);
         tracing::error!(
@@ -68,7 +64,7 @@ impl StartupDiagnostics {
 
 pub(crate) fn report_logging_failure(error: &(dyn Error + 'static)) {
     let details = error_chain(error);
-    eprintln!("Cursor BYOK failed to initialize logging: {details}");
+    eprintln!("Cursor Sub2API BYOK failed to initialize logging: {details}");
     show_fatal_dialog(&details, None);
 }
 
@@ -82,12 +78,12 @@ fn show_fatal_dialog(details: &str, log_directory: Option<&std::path::Path>) {
             .to_owned(),
     };
     let description = format!(
-        "Cursor BYOK 无法启动 / failed to start.\n\n错误 / Error:\n{details}\n\n{log_guidance}"
+        "Cursor Sub2API BYOK 无法启动 / failed to start.\n\n错误 / Error:\n{details}\n\n本程序依赖 Microsoft Evergreen WebView2 Runtime。若运行时缺失，请从官方页面手动安装：https://developer.microsoft.com/microsoft-edge/webview2/\n\n{log_guidance}"
     );
 
     let _ = MessageDialog::new()
         .set_level(MessageLevel::Error)
-        .set_title("Cursor BYOK 启动失败 / Startup Error")
+        .set_title("Cursor Sub2API BYOK 启动失败 / Startup Error")
         .set_description(description)
         .set_buttons(MessageButtons::Ok)
         .show();

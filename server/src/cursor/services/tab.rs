@@ -39,13 +39,9 @@ pub fn router() -> Router<TransportRegistry> {
 }
 
 async fn forward(
-    State(registry): State<TransportRegistry>,
+    State(_registry): State<TransportRegistry>,
     Extension(upstream): Extension<proxy::CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    let settings = registry.store().tab_settings().await?;
-    match settings.service_url() {
-        Some(service_url) => proxy::forward_to_service(&upstream, request, service_url).await,
-        None => proxy::forward(Extension(upstream), request).await,
-    }
+    proxy::forward(Extension(upstream), request).await
 }

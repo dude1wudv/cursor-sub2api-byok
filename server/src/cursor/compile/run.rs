@@ -51,7 +51,6 @@ pub(crate) struct PrepareDependencies<'a> {
     pub checkpoint: &'a CheckpointBuilder,
     pub blob_sync: &'a BlobSynchronizer,
     pub context_sync: &'a RequestContextSynchronizer,
-    pub local_rules_dir: Option<&'a std::path::Path>,
 }
 
 pub(crate) async fn prepare(
@@ -65,7 +64,6 @@ pub(crate) async fn prepare(
         checkpoint,
         blob_sync,
         context_sync,
-        local_rules_dir,
     } = dependencies;
     checkpoint
         .import_prefetched(&request.pre_fetched_blobs)
@@ -119,11 +117,7 @@ pub(crate) async fn prepare(
         let encoded = serde_json::to_vec(&summary)?;
         trace.artifact("history_projection", "byok_server", &encoded, summary);
     }
-    let mut request_context = context::hydrate(request, context_sync).await?;
-    if let Some(rules_dir) = local_rules_dir {
-        context::merge_local_rules(&mut request_context, rules_dir);
-    }
-    let request_context = request_context;
+    let request_context = context::hydrate(request, context_sync).await?;
     let ActionProjection {
         mode: mode_number,
         mut turn_user,

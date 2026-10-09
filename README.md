@@ -1,113 +1,81 @@
-## 👋Is Cursor getting too heavy?  ✨ **New from the same author** → [Baocode](https://baocode.dev) — an awesome desktop GUI for Claude Code: polished, ultra-small, ultra-light.
+# Cursor Sub2API BYOK
 
-<div align="center">
+Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab](https://microedulab.com/)** 开发与维护。
 
-# cursor-byok
-cursor-byok is a local implementation of Cursor's backend.
-<br>
-<br>
-<a href="https://trendshift.io/repositories/39260?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-39260" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/39260" alt="leookun/cursor-byok | Trendshift" width="250" height="55" /></a>
+[下载 Release](https://github.com/dude1wudv/cursor-sub2api-byok/releases) · [开发仓库](https://github.com/dude1wudv/cursor-sub2api-byok) · [反馈问题](https://github.com/dude1wudv/cursor-sub2api-byok/issues) · [更新记录](CHANGELOG.md) · [验证范围](docs/VALIDATION.md)
 
-[User Guide](https://docs.leokun.cn) · [Download](https://github.com/leookun/cursor-byok/releases/latest) · [Report an Issue](https://github.com/leookun/cursor-byok/issues) · [中文版本说明](./README-CN.md)
+基于 [leookun/cursor-byok](https://github.com/leookun/cursor-byok) 固定提交 `7ee68c2b7fef66a0e0279273d037d23fbc2f11ad`，保留上游 Git 历史、原 MIT LICENSE 和版权。本项目独立维护，不隶属于 Cursor。
 
-[![Release](https://img.shields.io/github/v/release/leookun/cursor-byok?style=flat-square)](https://github.com/leookun/cursor-byok/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/leookun/cursor-byok/total?style=flat-square)](https://github.com/leookun/cursor-byok/releases)
-[![License](https://img.shields.io/github/license/leookun/cursor-byok?style=flat-square)](./LICENSE)
-[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square)](https://github.com/leookun/cursor-byok/releases/latest)
+## 下载与要求
 
+从 Release 下载 `Cursor-Sub2API-BYOK-windows-x64.zip`，解压后运行 EXE。包内含原 LICENSE、THIRD-PARTY-NOTICES.txt 和 SHA256SUMS.txt；Release 另提供完整资产校验和。
 
+- Windows x64、Microsoft Evergreen WebView2、有效的 Sub2API Base URL/Key，以及自己的 Cursor 登录环境。
+- MicroEduLab 是维护者署名；**EXE 未做 Authenticode 数字签名**，可能出现 SmartScreen 提示。
+- 首版完成构建、自动化及实际 EXE 的隔离恢复验证。**真实 Cursor/GPT/Claude/MCP 闭环尚未验收**，详见验证范围。
 
-</div>
+## 功能
 
-![Connect cursor-byok to a wide range of model APIs](./images/en-brand-1.png)
+- 一个连接共享给多个 GPT/Claude 模型，默认使用 Responses/Messages，可选 Chat Completions。
+- 启停通过可恢复事务管理 JSONC settings、本地代理和 CurrentUser CA。
+- Key、CA 私钥和 journal 由 Windows CurrentUser DPAPI 加密。
+- 管理 API 仅在 loopback 上使用随机 token，并校验 Host/Origin。
+- 保留 Cursor 自带 rules/Skills/MCP、工具、取消、检查点与 compaction；不添加软件 rules。
 
-![cursor-byok dashboard](./images/en-home-1.png)
+## 使用
 
-## About
+1. 安装 Microsoft [Evergreen WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)；程序不会静默安装运行时。
+2. 打开 `Cursor-Sub2API-BYOK.exe`，保存一个 Sub2API Base URL 与专用 API Key。URL 为 HTTPS 根地址或 `/v1`。
+3. 添加模型：GPT 默认 Responses、Claude 默认 Messages；模型 ID 必须由你的 Sub2API 提供。
+4. 完全退出 Cursor，点击“开启接管”，再手动打开 Cursor 并使用原生登录。
+5. 完全退出 Cursor 后点击“关闭并恢复”，或关闭本程序窗口。窗口 × 会恢复后退出；Cursor 仍运行或恢复失败时阻止退出。
 
-cursor-byok is an open-source local model gateway for Cursor. It runs a service on your machine that connects Cursor to the model APIs you configure, routes model requests through your own providers, and preserves Cursor Agent capabilities such as tool calling, Skills, and MCP.
+本程序不修改 Cursor 安装文件、hosts、系统代理或账号数据库，不伪造会员资格。官方账号/计费流量继续转发到 Cursor。原生工具、MCP、Skills、检查点、取消和 compaction 仍使用上游实现。
 
-You can connect OpenAI- and Anthropic-compatible services, customize endpoints, model IDs, API keys, and request parameters, and use model channels beyond the options built into the platform.
+## 数据与恢复
 
-> [!IMPORTANT]
-> cursor-byok is free and open source, but the model APIs you connect may charge for usage. This is an independent project and is not affiliated with or endorsed by Cursor or its developers.
+默认数据目录 `%LOCALAPPDATA%\CursorSub2APIByok`；默认目标 `%APPDATA%\Cursor\User\settings.json`。API Key、CA 私钥及恢复 journal 使用 Windows CurrentUser DPAPI，仅当前 Windows 用户可解密，不能直接迁移到其他用户或机器。
 
-## Features
-
-- **Bring your own model channels:** Configure your own API endpoint, credentials, and model IDs.
-- **Multiple API protocols:** Use OpenAI- and Anthropic-compatible APIs or a custom endpoint.
-- **Model management:** Add, duplicate, edit, reorder, and batch-test multiple model configurations.
-- **Connection benchmarks:** Measure time to first token, generation speed, and inspect raw provider responses.
-- **Agent workflows:** Keep tool calling, Skills, MCP, and multi-turn conversations available.
-- **Session metrics:** Track token usage, cache hit rate, conversation turns, and estimated value.
-- **Cross-platform:** Run on macOS, Windows, and Linux.
-
-## Quick Start
-
-1. Download the latest build for your platform from [GitHub Releases](https://github.com/leookun/cursor-byok/releases/latest).
-2. Launch cursor-byok, open **Model Settings**, and enter the endpoint, API key, and model ID.
-3. Test the model configuration. Once it passes, return to the dashboard and start the service.
-4. Test the model configuration. Once it passes, return to the dashboard and start the service.
-5. After upgrading Cursor or configuring a model for the first time, quit Cursor completely and restart it, then start a new conversation and select the configured model.
-
-For complete installation steps, system configuration, and Frequently Asked Questions, see the [User Guide](https://docs.leokun.cn).
-
-## Model Management
-
-Model configurations support both OpenAI and Anthropic API protocols. Each model channel can independently define its context window, maximum output tokens, reasoning effort, custom headers, and additional request parameters.
-
-![cursor-byok model settings](./images/en-model-1.png)
-
-## How It Works
-
-```text
-Cursor client
-    │
-    │ Agent requests and tool results
-    ▼
-cursor-byok local service
-    │
-    │ OpenAI- / Anthropic-compatible requests
-    ▼
-Your model API
+```powershell
+.\Cursor-Sub2API-BYOK.exe --data-dir "E:\Isolated Test\Data" --cursor-user-data-dir "E:\Isolated Test\Cursor Profile"
+.\Cursor-Sub2API-BYOK.exe --restore --data-dir "E:\Isolated Test\Data" --cursor-user-data-dir "E:\Isolated Test\Cursor Profile"
 ```
 
-cursor-byok handles protocol adaptation, model request forwarding, tool-call coordination, and conversation state on your machine. API keys and application settings are stored locally; requests are still sent to the model provider you configure.
+`--cursor-user-data-dir` 指向用户数据根，实际操作其 `User\settings.json`。路径须为绝对路径且不能经过 reparse point；GUI 与恢复命令全局单实例互斥。
 
-## Why This Project
+首次接管生成专属 CA，只安装到 CurrentUser Root。Windows 会弹出该证书的安装或删除确认；核对名称为 `Cursor Sub2API BYOK Local CA` 后点击“是”。`--restore` 也可能需要这一步系统确认，不能当作完全无人值守命令。恢复时先还原 settings，再停止代理，再按 journal 中精确 DER 删除本次新增的证书；预先受信任的证书保留。原 JSONC 的 BOM、CRLF、注释及无关字段保留。用户在接管期间改成第三值的管理项保留并提示，无法确认归属时保留 journal 并进入 `recovery_required`。
 
-Many Agent products bundle their tool capabilities with a fixed set of models, subscriptions, and billing options, leaving users limited to the channels offered by the platform.
+崩溃后使用相同参数重新启动或执行 `--restore`。恢复命令不启动代理或网络客户端，成功返回 0，冲突返回非零。不要删除 `takeover-journal.dpapi` 或复制其他用户的数据目录来绕过恢复。
 
-cursor-byok is built to return model choice to the user. Developers can make full use of the APIs and credits they already have, choose the models and providers that fit their needs, and self-host related services when required.
+## 本地构建
 
-## Roadmap
+需要 Windows x64、MSVC/Rust、pnpm 9、Node 和 Python 3。
 
-The project will continue to improve model compatibility, Agent tooling, local runtime stability, and the self-hosting experience while exploring support for more IDE, chat, and Agent workflows.
+```powershell
+cargo test -p cursor-server --lib --tests
+pwsh -NoProfile -File scripts/build-portable.ps1
+```
 
-See the [release roadmap](https://github.com/leookun/cursor-byok/discussions/32) for plans and progress.
+脚本执行 frozen install、两个 TypeScript 检查及 `tauri build --no-bundle`，交付 EXE、LICENSE、THIRD-PARTY-NOTICES.txt、SHA256SUMS.txt 和相邻 ZIP。默认输出 `dist/windows-x64`，可用 `-OutputDirectory <absolute-path>` 指定目录。没有安装器、自动更新或开机自启。
 
-## Community and Support
+自动化测试使用临时数据、合成 Key 与 loopback fixture。真实 Cursor/GPT/Claude/MCP 闭环必须使用用户自行登录的专用环境和专用 Key 单独验收。
 
-- [User Guide](https://docs.leokun.cn)
-- [GitHub Issues](https://github.com/leookun/cursor-byok/issues)
-- [Telegram community](https://t.me/cursor_byok)
-- QQ groups: `1095916242`, `1094411438`, `1095918002`, `1094419321`
+## 开发结构
 
+```text
+apps/desktop/src/          # 连接、模型、接管状态及 MicroEduLab 关于页
+apps/desktop/src-tauri/    # Windows 入口、单实例、窗口与退出流程
+server/src/local_app/     # JSONC、DPAPI、CA、journal 与代理事务
+server/src/control/       # 管理鉴权与控制 API
+server/src/store/         # SQLite 与共享连接/模型原子同步
+server/src/cursor/        # Cursor 原生协议、工具与会话生命周期
+scripts/                 # 便携打包、依赖许可及隔离原生验证
+```
 
+数据流：Cursor → 本地 loopback 代理 → 原生协议适配 → Sub2API；账号、计费等官方流量继续转发 Cursor。GitHub Windows CI 执行前端检查、隔离服务端测试及原生编译检查；公开 Release 由维护者验证本地资产后发布，不使用上游 updater 发布链。
 
-## Development and Contributing
+## 反馈与许可
 
-Issues and pull requests are welcome. See the [Contributing Guide](./CONTRIBUTING_EN.md) for prerequisites, build commands, project structure, and contribution guidelines.
+反馈请提供版本、Windows 版本、操作步骤及脱敏错误。**不要上传 Key、CA 私钥、journal、数据库、Cursor 账号数据或未脱敏日志。**
 
-## Contributors
-
-<a href="https://github.com/leookun/cursor-byok/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=leookun/cursor-byok" />
-</a>
-
-
-## License
-
-This project is open source under the [MIT License](./LICENSE).
-
-
+MIT，原版权 `Copyright (c) 2026 leookun` 保持不变。MicroEduLab 维护本 fork；第三方依赖说明随发行包提供。[MicroEduLab 网站](https://microedulab.com/)

@@ -643,7 +643,6 @@ fn spawn_run_request(
                     checkpoint: &checkpoint,
                     blob_sync: &blob_sync,
                     context_sync: &context_sync,
-                    local_rules_dir: dependencies.local_rules_dir.as_deref(),
                 },
             ) => prepared,
         };

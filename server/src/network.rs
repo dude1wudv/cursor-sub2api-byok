@@ -83,6 +83,7 @@ impl NetworkClients {
         let client = client_builder(&self.store)
             .await?
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         cache.provider = Some((timeout, client.clone()));
         Ok(client)

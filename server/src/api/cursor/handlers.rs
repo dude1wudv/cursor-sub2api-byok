@@ -19,10 +19,7 @@ use crate::{
             connect,
             proto::{agent::v1 as agent, aiserver::v1 as ai},
         },
-        services::{
-            account, analytics, commit_message, compatibility, entitlement::FreeEntitlementCache,
-            knowledge, model_catalog, server_config, tab,
-        },
+        services::{analytics, compatibility, model_catalog, server_config, tab},
         transport::{TransportParent, TransportRegistry},
     },
     Result,
@@ -33,17 +30,11 @@ pub fn router(
     clients: crate::network::NetworkClients,
 ) -> Result<Router> {
     let proxy = CursorProxy::cursor(clients);
-    let knowledge = knowledge::KnowledgeService::managed()?;
-    Ok(router_with_proxy(registry, proxy, knowledge))
+    Ok(router_with_proxy(registry, proxy))
 }
 
-fn router_with_proxy(
-    registry: TransportRegistry,
-    proxy: CursorProxy,
-    knowledge_service: knowledge::KnowledgeService,
-) -> Router {
+fn router_with_proxy(registry: TransportRegistry, proxy: CursorProxy) -> Router {
     let web_cache = registry.web_cache().router();
-    let free_entitlements = FreeEntitlementCache::default();
     Router::new()
         .route("/__byok-api__/healthz", get(health))
         .route("/agent.v1.AgentService/RunSSE", post(run_sse_handler))
@@ -86,7 +77,7 @@ fn router_with_proxy(
         )
         .route(
             "/aiserver.v1.AiService/WriteGitCommitMessage",
-            post(commit_message::write_git_commit_message),
+            post(proxy::forward),
         )
         .route(
             "/aiserver.v1.NetworkService/IsConnected",
@@ -108,61 +99,53 @@ fn router_with_proxy(
             "/aiserver.v1.AiService/GetDefaultModelNudgeData",
             post(model_catalog::default_model_nudge),
         )
-        .route(
-            "/aiserver.v1.AuthService/GetEmail",
-            post(account::get_email),
-        )
-        .route(
-            "/aiserver.v1.AuthService/GetUserMeta",
-            post(account::get_user_meta),
-        )
-        .route("/aiserver.v1.DashboardService/GetMe", post(account::get_me))
+        .route("/aiserver.v1.AuthService/GetEmail", post(proxy::forward))
+        .route("/aiserver.v1.AuthService/GetUserMeta", post(proxy::forward))
+        .route("/aiserver.v1.DashboardService/GetMe", post(proxy::forward))
         .route(
             "/aiserver.v1.DashboardService/GetTeams",
-            post(account::get_teams),
+            post(proxy::forward),
         )
         .route(
             "/aiserver.v1.DashboardService/GetUserProfile",
-            post(account::get_user_profile),
+            post(proxy::forward),
         )
         .route(
             "/aiserver.v1.DashboardService/GetCurrentPeriodUsage",
-            post(account::current_period_usage),
+            post(proxy::forward),
         )
         .route(
             "/aiserver.v1.DashboardService/GetUsageLimitStatusAndActiveGrants",
-            post(account::usage_limit_status),
+            post(proxy::forward),
         )
         .route(
             "/aiserver.v1.AiService/KnowledgeBaseAdd",
-            post(knowledge::add),
+            post(proxy::forward),
         )
         .route(
             "/aiserver.v1.AiService/KnowledgeBaseList",
-            post(knowledge::list),
+            post(proxy::forward),
         )
         .route(
             "/aiserver.v1.AiService/KnowledgeBaseUpdate",
-            post(knowledge::update),
+            post(proxy::forward),
         )
         .route(
             "/aiserver.v1.AiService/KnowledgeBaseRemove",
-            post(knowledge::remove),
+            post(proxy::forward),
         )
         .route(
             analytics::BOOTSTRAP_STATSIG_PATH,
             post(analytics::bootstrap_statsig),
         )
-        .route("/auth/full_stripe_profile", get(account::stripe_profile))
-        .route("/auth/stripe_profile", get(account::stripe_profile))
+        .route("/auth/full_stripe_profile", get(proxy::forward))
+        .route("/auth/stripe_profile", get(proxy::forward))
         .merge(tab::router())
         .route_layer(DefaultBodyLimit::disable())
         .route_layer(RequestDecompressionLayer::new())
         .fallback(proxy::forward)
         .method_not_allowed_fallback(proxy::forward)
         .layer(Extension(proxy))
-        .layer(Extension(knowledge_service))
-        .layer(Extension(free_entitlements))
         .with_state(registry)
         .merge(web_cache)
 }

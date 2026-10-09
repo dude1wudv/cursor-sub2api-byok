@@ -33,3 +33,19 @@ cursor-tab-server/cursor-tab-server-linux-amd64.tar
 /scripts/cursor-proto/proto/*
 !/scripts/cursor-proto/proto/agent_v1.proto
 !/scripts/cursor-proto/proto/aiserver_v1.proto
+
+/verification-*.log
+
+# Runtime data and local handoff notes are never part of the public source.
+/PLAN.md
+/VERIFICATION.md
+*.dpapi
+*.db
+*.db-shm
+*.db-wal
+*.pfx
+*.p12
+ca.key
+ca.crt
+.env
+.env.*

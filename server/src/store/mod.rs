@@ -1,10 +1,11 @@
 //! Exposes the local persistence interface.
 mod cas;
+mod sub2api;
+pub use sub2api::{Sub2ApiConnection, Sub2ApiConnectionInput, Sub2ApiModelInput};
 mod checkpoints;
 mod conversations;
 mod cursor_traces;
 mod input_anchors;
-mod legacy_config;
 mod llm_calls;
 mod messages;
 mod migrations;

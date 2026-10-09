@@ -24,6 +24,16 @@ pub struct PluginDefinitionLoader {
 }
 
 impl PluginDefinitionLoader {
+    pub(super) fn empty() -> Self {
+        Self {
+            sdk_dir: PathBuf::new(),
+            import_map: PathBuf::new(),
+            collector: PathBuf::new(),
+            worker: PathBuf::new(),
+            deno_dir: PathBuf::new(),
+        }
+    }
+
     pub fn managed() -> Result<Self> {
         Self::in_directory(config::managed_data_dir()?.join("plugins/runtime/sdk/v1"))
     }

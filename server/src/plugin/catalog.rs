@@ -34,6 +34,14 @@ pub(crate) struct PluginEntry {
 }
 
 impl PluginCatalog {
+    pub fn empty() -> Self {
+        Self {
+            roots: vec![],
+            definition_loader: PluginDefinitionLoader::empty(),
+            app_version: String::new(),
+        }
+    }
+
     pub fn managed(app_version: String) -> Result<Self> {
         let installed = config::managed_data_dir()?.join("plugins/installed");
         fs::create_dir_all(&installed)?;

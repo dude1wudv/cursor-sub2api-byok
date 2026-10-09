@@ -1,4 +1,4 @@
-//! Verifies local markdown rules are merged into the request-context message.
+//! Cursor-provided rules remain; software-local rules are never injected.
 #[path = "support/fake_provider.rs"]
 mod fake_provider;
 #[path = "support/fixtures.rs"]
@@ -19,7 +19,7 @@ use cursor_server::{
 use prost::Message;
 
 #[tokio::test]
-async fn local_markdown_rules_land_in_the_request_context_message() {
+async fn cursor_rules_survive_without_software_rules_injection() {
     let (_store_dir, store) = fixtures::temp_store().await;
     let provider = fake_provider::FakeProvider::default();
     provider.push(vec![
@@ -43,11 +43,10 @@ async fn local_markdown_rules_land_in_the_request_context_message() {
     std::fs::create_dir_all(&rules_root).unwrap();
     std::fs::write(rules_root.join("17353272.md"), "Always answer in haiku.").unwrap();
 
-    let registry = TransportRegistry::with_local_rules(
+    let registry = TransportRegistry::new(
         store,
         Arc::new(provider.clone()),
         PromptCompiler::new(assets),
-        rules_root,
     );
     let handle = registry.get_or_create("rules-request").await.unwrap();
     let mut output = handle.subscribe();
@@ -107,8 +106,9 @@ async fn local_markdown_rules_land_in_the_request_context_message() {
         "exactly one request-context message is projected"
     );
     assert!(
-        context_texts[0].contains("<user_rule>\nAlways answer in haiku.\n</user_rule>"),
-        "local markdown rule must appear as a user rule: {}",
+        context_texts[0].contains("Cursor-provided instruction")
+            && !context_texts[0].contains("Always answer in haiku."),
+        "Cursor rules must survive and local files must be absent: {}",
         context_texts[0]
     );
 
@@ -135,6 +135,13 @@ fn user_run() -> pb::AgentClientMessage {
                 action: Some(pb::ConversationAction {
                     action: Some(pb::conversation_action::Action::UserMessageAction(
                         pb::UserMessageAction {
+                            request_context: Some(pb::RequestContext {
+                                non_file_rules: vec![pb::CursorRule {
+                                    content: "Cursor-provided instruction".into(),
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            }),
                             user_message: Some(pb::UserMessage {
                                 text: "hello".into(),
                                 message_id: "rules-user".into(),

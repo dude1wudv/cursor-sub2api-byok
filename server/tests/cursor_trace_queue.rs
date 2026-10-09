@@ -80,7 +80,13 @@ async fn trace_producers_do_not_wait_for_sqlite_and_artifacts_stay_ordered() {
                 .cursor_trace_artifacts("trace-queue-order")
                 .await
                 .unwrap();
-            if artifacts.len() == 64 {
+            // The finish command follows the last artifact; wait for both writes.
+            let completed = store
+                .cursor_trace("trace-queue-order")
+                .await
+                .unwrap()
+                .is_some_and(|trace| trace.status == "completed");
+            if artifacts.len() == 64 && completed {
                 break artifacts;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

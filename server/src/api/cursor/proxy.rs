@@ -62,22 +62,10 @@ pub async fn forward(
     Extension(proxy): Extension<CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    forward_request(&proxy, request, None).await
+    forward_request(&proxy, request).await
 }
 
-pub(crate) async fn forward_to_service(
-    proxy: &CursorProxy,
-    request: Request<Body>,
-    service_url: &str,
-) -> Result<Response<Body>> {
-    forward_request(proxy, request, Some(service_url)).await
-}
-
-async fn forward_request(
-    proxy: &CursorProxy,
-    request: Request<Body>,
-    service_url: Option<&str>,
-) -> Result<Response<Body>> {
+async fn forward_request(proxy: &CursorProxy, request: Request<Body>) -> Result<Response<Body>> {
     let started = Instant::now();
     let (parts, body) = request.into_parts();
     let path = parts
@@ -85,13 +73,11 @@ async fn forward_request(
         .path_and_query()
         .map_or("/", |value| value.as_str())
         .to_owned();
-    let url = match service_url {
-        Some(service_url) => format!("{}{}", service_url.trim_end_matches('/'), path),
-        None => upstream_url(&parts.headers, &proxy.upstream, &path)?,
-    };
+    let url = upstream_url(&parts.headers, &proxy.upstream, &path)?;
 
     let mut headers = parts.headers;
     headers.remove(UPSTREAM_URL_HEADER);
+    headers.remove(crate::control::auth::TOKEN_HEADER);
     headers.remove(header::HOST);
     remove_hop_by_hop_headers(&mut headers);
 
@@ -146,6 +132,7 @@ pub async fn forward_buffered(
     let url = upstream_url(&parts.headers, &proxy.upstream, path)?;
     let mut headers = parts.headers;
     headers.remove(UPSTREAM_URL_HEADER);
+    headers.remove(crate::control::auth::TOKEN_HEADER);
     headers.remove(header::HOST);
     remove_hop_by_hop_headers(&mut headers);
     headers.insert(
@@ -224,4 +211,70 @@ fn remove_hop_by_hop_headers(headers: &mut axum::http::HeaderMap) {
         headers.remove(name);
     }
     headers.remove("keep-alive");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn official_free_pro_401_and_5xx_preserve_status_headers_and_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::connect(&format!(
+            "sqlite://{}",
+            dir.path().join("test.db").display()
+        ))
+        .await
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = format!("http://{}", listener.local_addr().unwrap());
+        let router = axum::Router::new().fallback(
+            |headers: axum::http::HeaderMap, uri: axum::http::Uri| async move {
+                assert!(!headers.contains_key(crate::control::auth::TOKEN_HEADER));
+                assert_eq!(
+                    headers["authorization"],
+                    "Bearer synthetic-official-session"
+                );
+                let (status, body) = match uri.path() {
+                    "/free" => (200, "{\"membership\":\"free\"}"),
+                    "/pro" => (200, "{\"membership\":\"pro\"}"),
+                    "/401" => (401, "unauthorized"),
+                    _ => (503, "upstream unavailable"),
+                };
+                Response::builder()
+                    .status(status)
+                    .header("x-official-fixture", "unchanged")
+                    .body(Body::from(body))
+                    .unwrap()
+            },
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let proxy = CursorProxy {
+            clients: crate::network::NetworkClients::new(store.clone()),
+            upstream,
+        };
+        for (path, status, body) in [
+            ("/free", 200, "{\"membership\":\"free\"}"),
+            ("/pro", 200, "{\"membership\":\"pro\"}"),
+            ("/401", 401, "unauthorized"),
+            ("/503", 503, "upstream unavailable"),
+        ] {
+            let request = Request::builder()
+                .uri(path)
+                .header("authorization", "Bearer synthetic-official-session")
+                .header(
+                    crate::control::auth::TOKEN_HEADER,
+                    "synthetic-control-token",
+                )
+                .body(Body::empty())
+                .unwrap();
+            let response = forward(Extension(proxy.clone()), request).await.unwrap();
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()["x-official-fixture"], "unchanged");
+            assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), body);
+        }
+        task.abort();
+        store.pool().close().await;
+    }
 }

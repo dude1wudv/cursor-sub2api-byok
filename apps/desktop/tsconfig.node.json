@@ -6,7 +6,11 @@
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "allowImportingTsExtensions": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["vite*.config.ts", "plugins/**/*.ts"]
+  "include": [
+    "vite.config.ts"
+  ]
 }

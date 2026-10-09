@@ -1,5 +1,5 @@
 //! Configures the local application proxy.
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
 
 use hudsucker::{
     certificate_authority::RcgenAuthority,
@@ -9,12 +9,7 @@ use hudsucker::{
 };
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 
-use parking_lot::RwLock;
-
-use crate::{
-    api::cursor::proxy::UPSTREAM_URL_HEADER, cursor::services::tab::is_tab_path, store::TabMode,
-    Error, Result,
-};
+use crate::{api::cursor::proxy::UPSTREAM_URL_HEADER, Error, Result};
 
 use super::ca::LoadedCa;
 
@@ -27,6 +22,19 @@ pub struct ProxyRuntime {
 }
 
 impl ProxyRuntime {
+    #[cfg(test)]
+    pub(super) fn fixture() -> Self {
+        let (stop, done) = oneshot::channel();
+        Self {
+            url: Some("http://127.0.0.1:12345".into()),
+            port: Some(12345),
+            stop: Some(stop),
+            task: Some(tokio::spawn(async move {
+                let _ = done.await;
+            })),
+        }
+    }
+
     pub fn running(&self) -> bool {
         self.task.as_ref().is_some_and(|task| !task.is_finished())
     }
@@ -46,7 +54,6 @@ impl ProxyRuntime {
         backend: SocketAddr,
         ca: LoadedCa,
         requested_port: u16,
-        tab_mode: Arc<RwLock<TabMode>>,
     ) -> Result<(String, u16)> {
         if let Some(url) = self.url() {
             return Ok((url, self.port.unwrap_or_default()));
@@ -59,7 +66,7 @@ impl ProxyRuntime {
             .with_listener(listener)
             .with_ca(authority)
             .with_rustls_connector(aws_lc_rs::default_provider())
-            .with_http_handler(CursorRelay { backend, tab_mode })
+            .with_http_handler(CursorRelay { backend })
             .with_graceful_shutdown(async move {
                 let _ = done.await;
             })
@@ -80,8 +87,14 @@ impl ProxyRuntime {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        if let Some(task) = self.task.take() {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+        if let Some(mut task) = self.task.take() {
+            if tokio::time::timeout(std::time::Duration::from_secs(5), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                let _ = task.await;
+            }
         }
         self.url = None;
         self.port = None;
@@ -103,7 +116,6 @@ async fn bind_proxy_listener(requested_port: u16) -> Result<TcpListener> {
 #[derive(Clone)]
 struct CursorRelay {
     backend: SocketAddr,
-    tab_mode: Arc<RwLock<TabMode>>,
 }
 
 impl HttpHandler for CursorRelay {
@@ -113,7 +125,7 @@ impl HttpHandler for CursorRelay {
         mut request: Request<Body>,
     ) -> RequestOrResponse {
         let original = request.uri().clone();
-        let locally_routed = should_route_locally(original.path(), *self.tab_mode.read());
+        let locally_routed = is_local_path(original.path());
         if is_cursor_host(original.host().unwrap_or_default()) && locally_routed {
             if let Ok(value) = original.to_string().parse() {
                 request.headers_mut().insert(UPSTREAM_URL_HEADER, value);
@@ -189,10 +201,6 @@ fn is_local_path(path: &str) -> bool {
             | "/auth/full_stripe_profile"
             | "/auth/stripe_profile"
     )
-}
-
-fn should_route_locally(path: &str, tab_mode: TabMode) -> bool {
-    is_local_path(path) || (is_tab_path(path) && tab_mode != TabMode::Direct)
 }
 
 #[cfg(test)]
