@@ -12,7 +12,9 @@ v0.2.0，2026-10-09，Windows x64，固定上游 `7ee68c2b7fef66a0e0279273d037d2
 
 ## 构建与隔离恢复
 
-Tauri no-bundle 构建及实际 EXE 验证结果在本次发布前补充。隔离验证使用专用临时数据目录和 Cursor profile；不使用真实 Key 或真实 Cursor 会话。
+Tauri `--no-bundle` 构建通过，已生成 EXE、ZIP、原 LICENSE、第三方许可及 SHA256SUMS，并核对本机安装文件与发布包一致。
+
+v0.2.0 实际 EXE 已启动并进入首次授权/Windows 证书确认流程；本次因未收到系统确认，等待 300 秒后安全结束。离线恢复返回 0，CurrentUser Root 集合与测试前基线一致，无证书遗留。**本次持续信任的完整原生开关/崩溃/卸载流程尚未完成验证**；不沿用 v0.1.0 的证书临时信任证据冒充通过。隔离验证始终使用专用临时数据目录和 Cursor profile，不使用真实 Key 或真实 Cursor 会话。
 
 运行 `scripts/verify-portable.cjs EXE EVIDENCE_DIRECTORY PLAYWRIGHT_PACKAGE` 需要完全退出 Cursor，并由用户确认首次 Windows 证书安装与最终删除。检查日常多次开关、强制终止、离线恢复、启动恢复和窗口退出期间证书始终保留，显式卸载后 Root 集合回到基线；同时检查 settings 字节与 state.vscdb 哨兵。
 

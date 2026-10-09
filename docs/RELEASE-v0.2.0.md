@@ -10,6 +10,8 @@
 
 下载 ZIP 解压运行，或替换已完全退出的旧 EXE。数据仍在 `%LOCALAPPDATA%\CursorSub2APIByok`；升级前请完全退出 Cursor 和旧控制器。
 
+233 项 Rust 测试、前端类型检查、浏览器交互和 no-bundle 构建通过。新版持续证书信任的完整原生隔离流程因 Windows 确认未完成而尚未验收；失败退出后证书集合已核对回到基线。
+
 构建、自动化与隔离验证结果见 [验证范围](https://github.com/dude1wudv/cursor-sub2api-byok/blob/main/docs/VALIDATION.md)。**真实 Cursor/GPT/Claude/MCP 闭环未验收**，合成测试不代表真实上游可用性。
 
 附件：EXE、ZIP、原 MIT LICENSE、THIRD-PARTY-NOTICES.txt、SHA256SUMS.txt。EXE 未做 Authenticode 数字签名，MicroEduLab 是维护者署名。
