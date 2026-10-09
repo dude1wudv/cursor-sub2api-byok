@@ -1,7 +1,7 @@
 # Defines the server crate, binaries, and dependency graph.
 [package]
 name = "cursor-server"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 publish = false
 default-run = "cursor-server"
@@ -64,6 +64,7 @@ prost-build = "0.13"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 flate2 = "1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

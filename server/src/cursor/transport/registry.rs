@@ -33,6 +33,7 @@ struct RegistryInner {
     local: Mutex<HashMap<String, LocalTransport>>,
     next_local_generation: AtomicU64,
     upstream: Mutex<HashMap<String, u64>>,
+    finished: parking_lot::Mutex<HashMap<String, tokio::time::Instant>>,
     route_changed: Notify,
     store: Store,
     traces: CursorTraceService,
@@ -89,6 +90,7 @@ impl TransportRegistry {
                 local: Mutex::new(HashMap::new()),
                 next_local_generation: AtomicU64::new(1),
                 upstream: Mutex::new(HashMap::new()),
+                finished: parking_lot::Mutex::new(HashMap::new()),
                 route_changed: Notify::new(),
                 traces: CursorTraceService::new(store.clone()),
                 conversations: ConversationRegistry::new(
@@ -143,6 +145,7 @@ impl TransportRegistry {
             }
         }
         local.remove(request_id);
+        self.inner.finished.lock().remove(request_id);
         let (commands, receiver) = mpsc::channel(128);
         let output = Arc::new(OutputHub::default());
         let trace = self.inner.traces.recorder(request_id);
@@ -176,7 +179,21 @@ impl TransportRegistry {
                     .get(&request_id)
                     .is_some_and(|transport| transport.generation == generation)
                 {
+                    let mut finished = registry.finished.lock();
+                    let now = tokio::time::Instant::now();
+                    finished.retain(|_, at| now.duration_since(*at).as_secs() < 60);
+                    if finished.len() >= 1024 {
+                        if let Some(oldest) = finished
+                            .iter()
+                            .min_by_key(|(_, at)| **at)
+                            .map(|(id, _)| id.clone())
+                        {
+                            finished.remove(&oldest);
+                        }
+                    }
+                    finished.insert(request_id.clone(), now);
                     local.remove(&request_id);
+                    registry.route_changed.notify_waiters();
                 }
             }
         });
@@ -204,18 +221,24 @@ impl TransportRegistry {
         self.inner.upstream.lock().await.contains_key(request_id)
     }
 
-    pub async fn wait_route(&self, request_id: &str) -> TransportRoute {
+    pub async fn wait_route(&self, request_id: &str) -> Result<TransportRoute> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             let changed = self.inner.route_changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             if self.inner.local.lock().await.contains_key(request_id) {
-                return TransportRoute::Local;
+                return Ok(TransportRoute::Local);
             }
             if let Some(generation) = self.inner.upstream.lock().await.get(request_id).copied() {
-                return TransportRoute::Upstream(generation);
+                return Ok(TransportRoute::Upstream(generation));
             }
-            changed.await;
+            if self.inner.finished.lock().contains_key(request_id) {
+                return Err(crate::Error::RunNotFound(request_id.into()));
+            }
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
+                return Err(crate::Error::RunNotFound(request_id.into()));
+            }
         }
     }
 

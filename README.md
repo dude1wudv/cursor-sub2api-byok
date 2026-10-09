@@ -89,3 +89,10 @@ scripts/                 # 便携打包、依赖许可及隔离原生验证
 反馈请提供版本、Windows 版本、操作步骤及脱敏错误。**不要上传 Key、CA 私钥、journal、数据库、Cursor 账号数据或未脱敏日志。**
 
 MIT，原版权 `Copyright (c) 2026 leookun` 保持不变。MicroEduLab 维护本 fork；第三方依赖说明随发行包提供。[MicroEduLab 网站](https://microedulab.com/)
+
+
+## v0.2.2 流式连接修复
+
+Cursor 本地 RunSSE 在静默等待时每 5 秒发送协议心跳；心跳不计入模型输出，也不写入历史。最后一个 HTTP 订阅断开后保留 30 秒重连机会，新连接会使旧断线计时失效；显式取消仍立即生效。运行结束后的旧请求返回明确错误，未到达的 BidiAppend 最多等待 10 秒，避免无限停在重连状态。
+
+HTTP 400 也可能来自上游账号额度：本次 CommandCode 服务端诊断确认“insufficient credits”被隐藏成通用 400，这与本地流式缺陷是两个问题。相关调度修复在 CommandCode Proxy 独立发布；本控制器不伪造成功、不自动重放已执行工具的请求。

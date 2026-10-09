@@ -33,6 +33,14 @@ pub struct TransportHandle {
     trace: CursorTraceRecorder,
     lifecycle: TransportLifecycle,
     disconnect: CancellationToken,
+    subscriptions: Arc<parking_lot::Mutex<HttpSubscriptions>>,
+}
+
+#[derive(Default)]
+struct HttpSubscriptions {
+    active: usize,
+    generation: u64,
+    expired: bool,
 }
 
 impl TransportHandle {
@@ -51,6 +59,7 @@ impl TransportHandle {
             trace,
             lifecycle: TransportLifecycle::new(),
             disconnect: CancellationToken::new(),
+            subscriptions: Arc::default(),
         }
     }
 
@@ -107,6 +116,43 @@ impl TransportHandle {
 
     pub async fn disconnect(&self) {
         let _ = self.commands.send(TransportCommand::Disconnect).await;
+    }
+
+    pub(crate) fn attach_http(&self) -> Result<()> {
+        let mut state = self.subscriptions.lock();
+        if state.expired {
+            return Err(Error::RunNotFound(self.request_id.clone()));
+        }
+        state.active += 1;
+        state.generation += 1;
+        Ok(())
+    }
+
+    pub(crate) fn detach_http(&self, completed: bool) {
+        let mut state = self.subscriptions.lock();
+        state.active -= 1;
+        if completed || state.active != 0 {
+            return;
+        }
+        let generation = state.generation;
+        let handle = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let _ = handle
+                .command(TransportCommand::DisconnectIfUnsubscribed { generation })
+                .await;
+        });
+    }
+
+    // Checked by the actor, not the timer: a reconnect may arrive while the
+    // disconnect command is queued. Attaching and expiry share the same lock.
+    pub(crate) fn expire_http(&self, generation: u64) -> bool {
+        let mut state = self.subscriptions.lock();
+        if state.active != 0 || state.generation != generation {
+            return false;
+        }
+        state.expired = true;
+        true
     }
 
     pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<Bytes> {

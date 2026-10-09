@@ -25,5 +25,8 @@ pub enum TransportCommand {
         generation: u64,
         finish: RunFinish,
     },
+    DisconnectIfUnsubscribed {
+        generation: u64,
+    },
     Disconnect,
 }

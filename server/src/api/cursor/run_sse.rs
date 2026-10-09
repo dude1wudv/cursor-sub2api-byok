@@ -10,7 +10,10 @@ use tokio_stream::StreamExt;
 
 use crate::{
     cursor::{
-        protocol::connect::{self, END_STREAM_FLAG},
+        protocol::{
+            connect::{self, END_STREAM_FLAG},
+            events,
+        },
         services::observability::CursorTraceRecorder,
         transport::{TransportHandle, TransportRegistry},
     },
@@ -18,7 +21,11 @@ use crate::{
 };
 
 pub async fn stream(registry: &TransportRegistry, request_id: &str) -> Result<Response<Body>> {
-    let handle = registry.get_or_create(request_id).await?;
+    let handle = registry
+        .local(request_id)
+        .await
+        .ok_or_else(|| crate::Error::RunNotFound(request_id.into()))?;
+    handle.attach_http()?;
     let receiver = handle.subscribe();
     let trace = handle.trace().cloned();
     if let Some(trace) = &trace {
@@ -45,10 +52,23 @@ fn local_body_stream(
     handle: TransportHandle,
     trace: Option<CursorTraceRecorder>,
 ) -> impl tokio_stream::Stream<Item = std::result::Result<Bytes, Infallible>> {
+    let mut guard = LocalRunGuard::new(handle);
     async_stream::stream! {
-        let mut guard = LocalRunGuard::new(handle);
         let mut trace = TraceStreamSink::new(trace, "byok_server");
-        while let Some(chunk) = receiver.recv().await {
+        let heartbeat = connect::encode_message(&events::heartbeat())
+            .expect("encoding an empty heartbeat cannot fail");
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                chunk = receiver.recv() => match chunk { Some(chunk) => chunk, None => break },
+                _ = interval.tick() => {
+                    // Connection-local keepalive: never add it to replay history.
+                    yield Ok::<Bytes, Infallible>(heartbeat.clone());
+                    continue;
+                }
+            };
             let terminal = is_end_stream_frame(&chunk);
             trace.chunk(&chunk);
             if terminal {
@@ -115,12 +135,7 @@ impl LocalRunGuard {
 
 impl Drop for LocalRunGuard {
     fn drop(&mut self) {
-        if !self.completed {
-            let handle = self.handle.clone();
-            tokio::spawn(async move {
-                handle.disconnect().await;
-            });
-        }
+        self.handle.detach_http(self.completed);
     }
 }
 

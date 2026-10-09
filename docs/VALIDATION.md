@@ -1,5 +1,16 @@
 # 验证范围
 
+## v0.2.2 — 2026-10-09
+
+- Rust 238 项用例最终通过：首次运行 237 项通过，控制器恢复用例因本机 Cursor 仍运行而被安全保护拦截；退出 Cursor 后该目标的 3 项用例全部通过。未跳过或弱化断言。
+- 新增 4 项 Router/HTTP Body 回归，验证静默心跳、无历史污染、重叠订阅、断线宽限及旧计时失效、结束请求与未知路由的有界等待；既有取消、工具/MCP、checkpoint 和 compaction 回归通过。
+- pnpm typecheck、typecheck:node、Vite 与 Windows Tauri no-bundle 构建通过。
+- 已安装 EXE 本机两次开关复验通过：复用原授权和受信任 CA，无新证书操作；settings 逐字节恢复，journal 清理，模型仍为 11 个。此次未重跑全套崩溃/损坏 journal 原生测试；v0.2.1 的该项历史结果保留。
+- 与流式缺陷分别定位：CommandCode 对应时段 25 条上游 400 均为 insufficient credits。CommandCode Proxy 独立提交 `72d35ac1f7` 已部署，返回明确额度提示并临时停调账号 20 分钟。没有据此改写模型推理内容或重放失败工具请求。
+- 仍观察到 Gmail MCP 目标连接超时和 WebSocket 关闭错误；本次未修复外部 MCP 网络连通性，不将其宣称为已解决。
+- 未发起真实模型调用；真实 Cursor/GPT/Claude/MCP 闭环及长时间线上重连效果仍待用户使用验证。
+
+
 ## v0.2.1 — 2026-10-09
 
 - 代码检查：pnpm 9 的 typecheck、typecheck:node、Vite build 与 Tauri no-bundle 构建通过。

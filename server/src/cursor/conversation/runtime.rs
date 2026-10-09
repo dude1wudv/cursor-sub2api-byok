@@ -145,7 +145,13 @@ impl ConversationRuntime {
                     }
                 };
                 match command {
-                    TransportCommand::Disconnect => {
+                    TransportCommand::DisconnectIfUnsubscribed { generation }
+                        if !handle.expire_http(generation) =>
+                    {
+                        continue
+                    }
+                    TransportCommand::Disconnect
+                    | TransportCommand::DisconnectIfUnsubscribed { .. } => {
                         handle.mark_disconnected();
                         if let Some(generation) = current.as_ref() {
                             generation.superseded.cancel();
