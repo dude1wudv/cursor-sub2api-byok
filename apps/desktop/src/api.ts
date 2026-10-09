@@ -1,6 +1,6 @@
 declare global { interface Window { readonly __SUB2API_CONTROL_TOKEN__?: string } }
 export type Model = { model_hash: string; display_name: string; model_id: string; type: "openai" | "anthropic"; openai_endpoint: string; reasoning_effort: string | null; allowed_reasoning_efforts: string[]; anthropic_thinking_effort: string | null; context_window_tokens: number | null; max_completion_tokens: number | null; thinking_budget_tokens: number | null };
-export type Status = { integration: "disabled" | "enabled" | "degraded" | "recovery_required"; ca: string; ca_sha256: string | null; certificate_consent: boolean; settings_path: string; proxy_url: string | null; restart_required: boolean; recovery_error: string | null; warnings: string[] };
+export type Status = { integration: "disabled" | "enabled" | "degraded" | "recovery_required"; ca: "missing" | "untrusted" | "ready" | "invalid"; ca_sha256: string | null; certificate_consent: boolean; settings_path: string; proxy_url: string | null; restart_required: boolean; recovery_error: string | null; warnings: string[] };
 export type Connection = { base_url: string; has_api_key: boolean };
 export async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const token = window.__SUB2API_CONTROL_TOKEN__;

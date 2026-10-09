@@ -168,9 +168,9 @@ impl CursorHarness {
 
     pub async fn status(&self) -> Result<CursorHarnessStatus> {
         let configured_models = self.inner.store.models().await?.len();
-        let ca = self.inner.ca.state()?;
         let pending = journal::read(&self.inner.journal_path);
         let proxy = self.inner.proxy.lock().await;
+        let ca = self.inner.ca.state()?;
         let proxy_url = proxy.url();
         let matched = proxy_url
             .as_deref()
@@ -207,7 +207,7 @@ impl CursorHarness {
             });
         let integration = if recovery_error.is_some() {
             IntegrationState::RecoveryRequired
-        } else if proxy.running() && settings_applied {
+        } else if proxy.running() && settings_applied && matches!(ca, CaState::Ready) {
             IntegrationState::Enabled
         } else if proxy.running() || settings_applied {
             IntegrationState::Degraded

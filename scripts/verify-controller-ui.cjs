@@ -17,13 +17,25 @@ let browser;
   await page.addInitScript(() => Object.defineProperty(window,'__SUB2API_CONTROL_TOKEN__',{value:'synthetic-ui-token',writable:false}));
   const all=['low','medium','high','xhigh','max'];
   let models=[{model_hash:'gpt',display_name:'GPT · Research',model_id:'gpt-fixture',type:'openai',openai_endpoint:'/v1/responses',reasoning_effort:'high',anthropic_thinking_effort:null,allowed_reasoning_efforts:all,context_window_tokens:null,max_completion_tokens:null,thinking_budget_tokens:null}];
-  let consent=false, discoveryError=true, editorError=true;
+  let consent=false, ca='missing', integration='disabled', cursorRunning=false;
+  let consentCalls=0, enableCalls=0, installationCancelled=false;
+  let discoveryError=true, editorError=true;
+  const status = () => ({integration,ca,certificate_consent:consent,warnings:[],restart_required:cursorRunning});
   await page.route('**/__byok-api__/api/**', async route => {
     const req=route.request(); assert.equal(req.headers()['x-sub2api-control-token'],'synthetic-ui-token');
     const url=new URL(req.url()), endpoint=url.pathname.split('/api/')[1];
     const send=(body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
-    if(endpoint==='harness/cursor/status') return send({integration:'disabled',ca:consent?'ready':'missing',certificate_consent:consent,warnings:[],restart_required:false});
-    if(endpoint==='harness/cursor/ca/consent') {assert.deepEqual(req.postDataJSON(),{accepted:true,version:1});consent=true;return send({});}
+    if(endpoint==='harness/cursor/status') return send(status());
+    if(endpoint==='harness/cursor/ca/consent') {
+      assert.deepEqual(req.postDataJSON(),{accepted:true,version:1});consentCalls++;consent=true;
+      // Even a successful HTTP response must report trusted CA before proceeding.
+      ca=consentCalls===1?'untrusted':'ready';return send(status());
+    }
+    if(endpoint==='harness/cursor/enabled') {
+      enableCalls++;
+      if(installationCancelled){installationCancelled=false;return send({message:'合成 Windows 安装取消'},400);}
+      integration=req.postDataJSON().enabled?'enabled':'disabled';ca='ready';return send(status());
+    }
     if(endpoint==='sub2api/connection') return send({base_url:'https://sub2api.example/v1',has_api_key:true});
     if(endpoint==='sub2api/models') {if(discoveryError){discoveryError=false;return send({message:'合成网络错误'},400);}return send([{id:'gpt-fixture'},{id:'claude-fixture'},{id:'gpt-second'}]);}
     if(endpoint.startsWith('models/') && req.method()==='PUT') {
@@ -44,8 +56,39 @@ let browser;
   await page.goto(`http://127.0.0.1:${server.address().port}/__byok-api__/`);
   await page.getByRole('dialog').waitFor();assert(await page.getByRole('button',{name:'同意并安装证书',exact:true}).isDisabled());
   await page.screenshot({path:path.join(evidence,'setup.png')});
+  await page.getByRole('button',{name:'稍后',exact:true}).click();
+  await page.getByRole('button',{name:'开启接管',exact:true}).click();
+  await page.getByRole('dialog').waitFor();
   await page.getByRole('checkbox').check();await page.getByRole('button',{name:'同意并安装证书',exact:true}).click();
+  await page.getByText('证书尚未完成安装，请完成 Windows 确认后重试。',{exact:true}).waitFor();
+  assert.equal(enableCalls,0);
+  await page.getByRole('button',{name:'同意并安装证书',exact:true}).click();
   await page.getByRole('dialog').waitFor({state:'hidden'});
+  await page.getByText('接管已开启，现在可以打开 Cursor。',{exact:true}).waitFor();
+  assert.equal(enableCalls,1);assert.equal(integration,'enabled');
+  await page.getByRole('button',{name:'关闭并恢复',exact:true}).click();
+  await page.getByText('Cursor 设置已恢复，证书保留供下次使用。',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'开启接管',exact:true}).click();
+  await page.getByText('接管已开启，现在可以打开 Cursor。',{exact:true}).waitFor();
+  assert.equal(consentCalls,2);assert.equal(enableCalls,3);
+  await page.getByRole('button',{name:'关闭并恢复',exact:true}).click();
+  await page.getByText('Cursor 设置已恢复，证书保留供下次使用。',{exact:true}).waitFor();
+  ca='untrusted';installationCancelled=true;
+  await page.getByRole('button',{name:'刷新状态',exact:true}).click();
+  await page.getByText('证书待安装 · 已授权',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'开启接管',exact:true}).click();
+  await page.getByText('合成 Windows 安装取消',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('dialog').count(),0);assert.equal(consentCalls,2);assert.equal(integration,'disabled');
+  await page.getByRole('button',{name:'开启接管',exact:true}).click();
+  await page.getByText('接管已开启，现在可以打开 Cursor。',{exact:true}).waitFor();
+  assert.equal(enableCalls,6);assert.equal(consentCalls,2);
+  await page.getByRole('button',{name:'关闭并恢复',exact:true}).click();
+  await page.getByText('Cursor 设置已恢复，证书保留供下次使用。',{exact:true}).waitFor();
+  cursorRunning=true;
+  await page.getByRole('button',{name:'开启接管',exact:true}).click();
+  await page.getByRole('alert').getByText('请保存工作并完全退出 Cursor，再更改接管状态。',{exact:true}).waitFor();
+  assert.equal(enableCalls,7);assert.equal(await page.getByRole('dialog').count(),0);
+  cursorRunning=false;
   await page.getByRole('button',{name:'编辑配置',exact:true}).click();
   for(const effort of ['medium','high','max']) await page.getByRole('checkbox',{name:effort,exact:true}).uncheck();
   assert.equal(await page.getByLabel('默认强度',{exact:true}).inputValue(),'');
@@ -61,10 +104,14 @@ let browser;
   await page.screenshot({path:path.join(evidence,'model-discovery.png')});
   await page.getByRole('button',{name:'添加所选 2 个模型'}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
   assert.equal(models.length,3); assert.equal(models[1].type,'anthropic');
+  await page.getByRole('button',{name:'关闭操作提示',exact:true}).click();
+  assert.equal(await page.getByRole('alert').count(),0);
+  await page.locator('main').evaluate(el=>el.scrollTo(0,0));
   await page.screenshot({path:path.join(evidence,'models.png')});
   await page.getByRole('button',{name:'用量统计',exact:true}).click();await page.getByText('1.8M',{exact:true}).waitFor();
   await page.screenshot({path:path.join(evidence,'usage.png')});
   await page.setViewportSize({width:900,height:700});await page.getByRole('button',{name:'模型与连接',exact:true}).click();
   assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
-  assert.deepEqual(errors,[]);console.log('PASS: consent, effort multi-select/default, editor errors, discovery retry/search/bulk import, usage and layout.');
+  await page.screenshot({path:path.join(evidence,'models-compact.png')});
+  assert.deepEqual(errors,[]);console.log('PASS: consent-to-enable continuation, persistent consent repair/retry, Cursor guard, effort multi-select/default, editor errors, discovery retry/search/bulk import, usage and layout.');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();server.close();});

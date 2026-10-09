@@ -19,7 +19,7 @@ Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab]
 - 一个连接共享给多个 GPT/Claude 模型，默认使用 Responses/Messages，可选 Chat Completions。
 - `/v1/models` 获取可用模型，搜索、勾选并批量添加；仍支持手动配置。
 - 每个模型独立设置可选推理强度与默认强度，在 Cursor 原生选择器切换。
-- 浅色模型卡片、连接测试反馈、按时间和模型筛选的输入/输出/缓存 Token 统计。
+- 浅色蓝紫玻璃工作台、可折叠连接摘要、模型卡片、连接测试反馈、按时间和模型筛选的输入/输出/缓存 Token 统计。
 - 启停通过可恢复事务管理 JSONC settings 和本地代理；专属证书首次授权安装，卸载时清理。
 - Key、CA 私钥和 journal 由 Windows CurrentUser DPAPI 加密。
 - 管理 API 仅在 loopback 上使用随机 token，并校验 Host/Origin。
@@ -30,7 +30,7 @@ Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab]
 1. 安装 Microsoft [Evergreen WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)；程序不会静默安装运行时。
 2. 完全退出 Cursor，打开 `Cursor-Sub2API-BYOK.exe`，阅读并勾选首次使用说明，安装当前用户专属证书。
 3. 保存 Sub2API HTTPS 根地址或 `/v1` 与专用 API Key，点击“获取模型列表”勾选添加。按模型名称预选 Responses/Claude Messages，添加前可调整协议。编辑模型卡片设置可选强度与默认值；只勾选上游支持的档位。
-4. 完全退出 Cursor，点击“开启接管”，再手动打开 Cursor 并使用原生登录。
+4. 完全退出 Cursor，点击“开启接管”，再手动打开 Cursor 并使用原生登录。若尚未授权，完成首次说明与安装后会继续开启；已有授权不会重复弹出应用协议。
 5. 完全退出 Cursor 后点击“关闭并恢复”，或关闭本程序窗口。窗口 × 会恢复后退出；Cursor 仍运行或恢复失败时阻止退出。
 
 本程序不修改 Cursor 安装文件、hosts、系统代理或账号数据库，不伪造会员资格。官方账号/计费流量继续转发到 Cursor。原生工具、MCP、Skills、检查点、取消和 compaction 仍使用上游实现。

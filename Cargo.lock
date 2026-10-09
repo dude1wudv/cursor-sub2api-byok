@@ -1131,7 +1131,7 @@ checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "cursor-byok-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "cursor-server",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "cursor-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-stream",
  "axum",

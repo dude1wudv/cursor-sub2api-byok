@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { request } from "./api";
+import { request, type Status } from "./api";
 
 export function CertificateSetup({ done, cancel }: { done: () => Promise<void>; cancel: () => void }) {
   const [accepted, setAccepted] = useState(false);
@@ -18,7 +18,9 @@ export function CertificateSetup({ done, cancel }: { done: () => Promise<void>; 
     <label className="consent-check"><input type="checkbox" checked={accepted} disabled={busy} onChange={e => setAccepted(e.target.checked)} />我已阅读并同意以上说明，允许持续保留专属证书，直到我主动卸载。</label>
     <div className="dialog-footer"><button disabled={busy} onClick={cancel}>稍后</button><button className="primary" disabled={busy || !accepted} onClick={async () => {
       setBusy(true); setError("");
-      try { await request("harness/cursor/ca/consent", "POST", { accepted: true, version: 1 }); await done(); }
+      try { const status = await request<Status>("harness/cursor/ca/consent", "POST", { accepted: true, version: 1 });
+        if (!status.certificate_consent || status.ca !== "ready") throw new Error("证书尚未完成安装，请完成 Windows 确认后重试。");
+        await done(); }
       catch (e) { setError(e instanceof Error ? e.message : "证书安装失败"); }
       finally { setBusy(false); }
     }}>{busy ? "等待 Windows 确认…" : "同意并安装证书"}</button></div>

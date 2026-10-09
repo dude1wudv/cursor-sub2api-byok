@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { request, type Model, type Overview, type UsageBucket } from "./api";
 
 export const number = (value: number) => new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
-const series = [ ["input_tokens", "输入（非缓存）", "#618adc"], ["cache_read_tokens", "缓存读取", "#54ad96"], ["cache_write_tokens", "缓存写入", "#a391d4"], ["output_tokens", "输出", "#e3b267"] ] as const;
+const series = [ ["input_tokens", "输入（非缓存）", "#5c7bea"], ["cache_read_tokens", "缓存读取", "#43b4cc"], ["cache_write_tokens", "缓存写入", "#a58af2"], ["output_tokens", "输出", "#eead72"] ] as const;
 
 export function Usage({ models }: { models: Model[] }) {
   const [days, setDays] = useState(7);

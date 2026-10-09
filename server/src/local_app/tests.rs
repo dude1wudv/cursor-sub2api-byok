@@ -47,6 +47,8 @@ async fn active_is_idempotent_and_failed_restore_keeps_proxy_and_journal() {
     record.stage = journal::Stage::Active;
     journal::write(&h.inner.journal_path, &record).unwrap();
     *h.inner.proxy.lock().await = ProxyRuntime::fixture();
+    assert!(matches!(h.status().await.unwrap().integration, IntegrationState::Degraded),
+        "a running proxy with matching settings cannot be healthy without a trusted CA");
     let journal_before = fs::read(&h.inner.journal_path).unwrap();
     h.set_enabled(true).await.unwrap();
     h.set_enabled(true).await.unwrap();

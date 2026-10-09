@@ -6,7 +6,7 @@ use windows_sys::Win32::{
     Security::Cryptography::*,
 };
 
-const ROOT_STORE: [u16; 5] = [b'R' as u16, b'O' as u16, b'O' as u16, b'T' as u16, 0];
+const ROOT_STORE: [u16; 5] = [b'R' as u16, b'o' as u16, b'o' as u16, b't' as u16, 0];
 
 struct Store(HCERTSTORE);
 impl Drop for Store {
@@ -124,12 +124,24 @@ pub(super) fn is_installed(cert: &str) -> Result<bool> {
 
 pub(super) fn install(der: &[u8]) -> Result<bool> {
     let store = Store::current_user(false)?;
-    if store.contains(der)? {
-        return Ok(false);
+    let already_present = store.contains(der)?;
+    tracing::info!(already_present, "checking CurrentUser Root CA before install");
+    if !already_present {
+        store.install(der)?;
     }
-    store.install(der)?;
-    Ok(true)
+    // A context visible in the write handle is not proof of durable system trust.
+    drop(store);
+    let trusted = contains(der)?;
+    tracing::info!(trusted, "verified CurrentUser Root CA with fresh read handle");
+    require_persisted_trust(trusted)?;
+    Ok(!already_present)
 }
+fn require_persisted_trust(trusted: bool) -> Result<()> {
+    if trusted { Ok(()) } else {
+        Err(Error::Config("Windows 未保留证书信任，接管未开启。请完成系统安装确认后重试。".into()))
+    }
+}
+
 pub(super) fn remove(der: &[u8]) -> Result<()> {
     Store::current_user(false)?.remove(der)
 }
@@ -149,6 +161,12 @@ mod tests {
         params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let key = rcgen::KeyPair::generate().unwrap();
         params.self_signed(&key).unwrap().der().to_vec()
+    }
+
+    #[test]
+    fn a_successful_write_without_persisted_trust_is_rejected() {
+        assert!(require_persisted_trust(false).is_err());
+        assert!(require_persisted_trust(true).is_ok());
     }
 
     #[test]
