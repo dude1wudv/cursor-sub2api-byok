@@ -48,11 +48,12 @@ fn exec_context() -> ExecContext {
         conversation_id: "conversation".into(),
         root_conversation_id: "conversation".into(),
         default_subagent_model: "model".into(),
-        subagent_model: None,
+        default_subagent_parameters: Vec::new(),
+        subagent_models: std::collections::HashMap::new(),
+        selected_subagent_models: std::collections::HashMap::new(),
         terminals_folder: "/tmp/terminals".into(),
         admin_command_denylist: Vec::new(),
         allow_subagents: true,
-        subagents_disabled: false,
         mcp_routes: std::collections::HashMap::new(),
     }
 }
@@ -758,6 +759,128 @@ async fn new_task_result_exposes_the_subagent_name_and_id_to_the_model() {
         panic!("expected typed Task success")
     };
     assert_eq!(success.agent_id.as_deref(), Some("child-id"));
+    assert_eq!(
+        tool.args.as_ref().unwrap().agent_id.as_deref(),
+        Some("child-id")
+    );
+}
+
+#[tokio::test]
+async fn failed_task_retains_child_identity_for_cursor_view_and_wire_roundtrip() {
+    for child_id in [Some("failed-child"), None] {
+        let pending = CursorToolRuntime::default();
+        let mut task = call("failed-task", "Task");
+        task.arguments =
+            json!({"description":"inspect", "prompt":"inspect", "subagent_type":"generalPurpose"});
+        let id = pending.reserve_exec(&task, &exec_context()).await.unwrap();
+        let event = codec::client_event(
+            &pb::ExecClientMessage {
+                id,
+                message: Some(pb::exec_client_message::Message::SubagentResult(
+                    pb::SubagentResult {
+                        result: Some(pb::subagent_result::Result::Error(pb::SubagentError {
+                            agent_id: child_id.map(str::to_owned),
+                            error: "synthetic failure".into(),
+                            ..Default::default()
+                        })),
+                    },
+                )),
+                ..Default::default()
+            },
+            &pending,
+        )
+        .await
+        .unwrap();
+        let codec::ClientExecEvent::Completed(completion) = event else {
+            panic!("expected completion")
+        };
+        assert!(completion.result().is_error);
+        let decoded =
+            pb::ToolCall::decode(completion.tool_call().encode_to_vec().as_slice()).unwrap();
+        let Some(pb::tool_call::Tool::TaskToolCall(tool)) = decoded.tool else {
+            panic!("expected task")
+        };
+        assert_eq!(tool.args.unwrap().agent_id.as_deref(), child_id);
+        let Some(pb::task_result::Result::Error(error)) = tool.result.unwrap().result else {
+            panic!("expected error")
+        };
+        assert_eq!(error.error, "synthetic failure");
+    }
+}
+
+#[test]
+fn task_overrides_are_scoped_by_type_and_preserve_model_parameters() {
+    use cursor_server::cursor::tools::runtime::SubagentModel;
+    let mut context = exec_context();
+    let param = pb::requested_model::ModelParameterValue {
+        id: "effort".into(),
+        value: "high".into(),
+    };
+    context.default_subagent_parameters = vec![param.clone()];
+    context
+        .subagent_models
+        .insert("explore".into(), SubagentModel::Disabled);
+    context.subagent_models.insert(
+        "review".into(),
+        SubagentModel::Model(pb::RequestedModel {
+            model_id: "official-explicit".into(),
+            parameters: vec![pb::requested_model::ModelParameterValue {
+                id: "effort".into(),
+                value: "low".into(),
+            }],
+            ..Default::default()
+        }),
+    );
+    let mut task = call("typed-task", "Task");
+    task.arguments = json!({"prompt":"inspect","subagent_type":"generalPurpose"});
+    assert!(!context.task_disabled(&task));
+    let prepared = context.prepare_call(&task).unwrap();
+    let wire = codec::request(1, &prepared, &context).unwrap();
+    let Some(pb::agent_server_message::Message::ExecServerMessage(exec)) = wire.message else {
+        panic!("expected exec")
+    };
+    let Some(pb::exec_server_message::Message::SubagentArgs(args)) = exec.message else {
+        panic!("expected task")
+    };
+    let decoded = pb::SubagentArgs::decode(args.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.model_id, "model");
+    assert_eq!(decoded.model_parameters, vec![param]);
+    task.arguments["subagent_type"] = json!("explore");
+    assert!(context.task_disabled(&task));
+    task.arguments["subagent_type"] = json!("review");
+    let prepared = context.prepare_call(&task).unwrap();
+    assert_eq!(prepared.arguments["model"], "official-explicit");
+    assert_eq!(prepared.arguments["model_parameters"][0]["value"], "low");
+    context.selected_subagent_models.insert(
+        "byok-explicit".into(),
+        pb::RequestedModel {
+            model_id: "byok-explicit".into(),
+            parameters: vec![pb::requested_model::ModelParameterValue {
+                id: "effort".into(),
+                value: "medium".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    task.arguments["model"] = json!("byok-explicit");
+    let prepared = context.prepare_call(&task).unwrap();
+    assert_eq!(prepared.arguments["model"], "byok-explicit");
+    assert_eq!(prepared.arguments["model_parameters"][0]["value"], "medium");
+    task.arguments["model"] = json!("inherit");
+    task.arguments["resume"] = json!("existing-child");
+    assert_eq!(
+        context.prepare_call(&task).unwrap().arguments["model"],
+        "model"
+    );
+    task.arguments = json!({"prompt":"inspect","model":"official-explicit"});
+    assert_eq!(
+        context.prepare_call(&task).unwrap().arguments["model"],
+        "official-explicit"
+    );
+    assert_eq!(
+        context.prepare_call(&task).unwrap().arguments["model_parameters"],
+        json!([])
+    );
 }
 
 #[tokio::test]

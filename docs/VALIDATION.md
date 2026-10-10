@@ -1,5 +1,13 @@
 # 验证范围
 
+## v0.2.4 — 2026-10-09
+
+- 服务端 245 项测试最终通过。先运行 `cargo test -p cursor-server --lib --tests`，因本次 Task 模型说明调整而更新对应的工具目录快照；随后复跑 `prefix_stability` 及其后的全部集成测试，断言未跳过或弱化。
+- 新增回归覆盖按类型禁用／选模型、自定义子代理模型、当前显式选择优先、推理参数 field 21 的 protobuf 往返、续接保留模型、失败结果子对话 ID，以及 Chat/Responses 的真实 loopback HTTP 请求会话标识。同对话跨 run/call 稳定、不同对话隔离、空 GPT 对话 ID 拒绝、非 GPT 请求不变。
+- pnpm typecheck、typecheck:node、Vite 与 Windows Tauri no-bundle 构建通过；便携包包含 EXE、LICENSE、第三方声明和 SHA256SUMS。已更新本机至 0.2.4、备份旧 EXE、校验安装文件与包内 EXE 的 SHA-256 一致；沿用桌面快捷方式。
+- 本次未重跑实际 EXE 的 CA 安装／删除与崩溃恢复套件；未修改 CA、journal 和退出流程。现有隔离恢复历史结果不能替代新版本的完整原生恢复验收。
+- 本轮未调用真实上游模型，尚未验收真实 Cursor 子代理派遣／子对话打开、官方子模型权限、GPT 连续请求绑定及 GPT/Claude/MCP 闭环。静态对照本机 Cursor 3.23.12 协议，不承诺所有客户端版本兼容；上游账号不健康时仍允许正常故障转移。
+
 ## v0.2.3 — 2026-10-09
 
 - pnpm typecheck、typecheck:node、Vite 与 Windows Tauri no-bundle 构建通过；安装 EXE 与便携包 SHA-256 一致，桌面快捷方式沿用。

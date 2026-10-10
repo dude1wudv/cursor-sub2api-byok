@@ -43,9 +43,10 @@ pub struct ExecContext {
     pub conversation_id: String,
     pub root_conversation_id: String,
     pub default_subagent_model: String,
-    pub subagent_model: Option<SubagentModel>,
+    pub default_subagent_parameters: Vec<pb::requested_model::ModelParameterValue>,
+    pub subagent_models: HashMap<String, SubagentModel>,
+    pub selected_subagent_models: HashMap<String, pb::RequestedModel>,
     pub allow_subagents: bool,
-    pub subagents_disabled: bool,
     pub terminals_folder: String,
     pub admin_command_denylist: Vec<String>,
     pub mcp_routes: HashMap<(String, String), McpRoute>,
@@ -61,7 +62,7 @@ pub struct McpRoute {
 
 #[derive(Clone, Debug)]
 pub enum SubagentModel {
-    Model(String),
+    Model(pb::RequestedModel),
     Disabled,
 }
 
@@ -70,7 +71,10 @@ impl ExecContext {
         if !call.name.eq_ignore_ascii_case("Task") {
             return false;
         }
-        self.subagents_disabled || matches!(self.subagent_model, Some(SubagentModel::Disabled))
+        matches!(
+            self.subagent_models.get(task_type(call)),
+            Some(SubagentModel::Disabled)
+        )
     }
 
     pub fn prepare_call(&self, call: &ToolCall) -> Result<ToolCall> {
@@ -81,22 +85,31 @@ impl ExecContext {
             .arguments
             .as_object()
             .ok_or_else(|| Error::Protocol("Task arguments must be a JSON object".into()))?;
-        let subagent_type = arguments
-            .get("subagent_type")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("generalPurpose");
+        let subagent_type = task_type(call);
         if self.task_disabled(call) {
             return Ok(call.clone());
         }
-        let model = match &self.subagent_model {
-            Some(SubagentModel::Model(model)) => model.clone(),
+        let explicit = arguments
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .filter(|model| !matches!(*model, "inherit" | "default" | ""));
+        let selected = explicit.map(|id| SubagentModel::Model(self.selected_model(id)));
+        // Native Cursor preserves the existing child model on resume when sent
+        // the parent's model. A newly configured type default must not replace it.
+        let resume = arguments
+            .get("resume")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| !id.is_empty() && id != "self");
+        let default = (!resume)
+            .then(|| self.subagent_models.get(subagent_type))
+            .flatten();
+        let (model, parameters) = match selected.as_ref().or(default) {
+            Some(SubagentModel::Model(model)) => (model.model_id.clone(), model.parameters.clone()),
             Some(SubagentModel::Disabled) => unreachable!("disabled Task returned above"),
-            None => arguments
-                .get("model")
-                .and_then(serde_json::Value::as_str)
-                .filter(|model| *model != "inherit")
-                .unwrap_or(&self.default_subagent_model)
-                .to_string(),
+            None => (
+                self.default_subagent_model.clone(),
+                self.default_subagent_parameters.clone(),
+            ),
         };
         if model.is_empty() {
             return Err(Error::Protocol(format!(
@@ -104,13 +117,48 @@ impl ExecContext {
             )));
         }
         let mut prepared = call.clone();
+        prepared.arguments.as_object_mut().unwrap().insert(
+            "subagent_type".into(),
+            serde_json::Value::String(subagent_type.into()),
+        );
         prepared
             .arguments
             .as_object_mut()
             .expect("Task arguments were validated")
             .insert("model".into(), serde_json::Value::String(model));
+        prepared.arguments.as_object_mut().unwrap().insert(
+            "model_parameters".into(),
+            serde_json::json!(parameters
+                .iter()
+                .map(|p| serde_json::json!({"id": p.id, "value": p.value}))
+                .collect::<Vec<_>>()),
+        );
+        prepared.arguments_text = serde_json::to_string(&prepared.arguments)?;
         Ok(prepared)
     }
+
+    fn selected_model(&self, id: &str) -> pb::RequestedModel {
+        let mut model = self
+            .selected_subagent_models
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| pb::RequestedModel {
+                model_id: id.into(),
+                ..Default::default()
+            });
+        if model.parameters.is_empty() && id == self.default_subagent_model {
+            model.parameters = self.default_subagent_parameters.clone();
+        }
+        model
+    }
+}
+
+fn task_type(call: &ToolCall) -> &str {
+    call.arguments
+        .get("subagent_type")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("generalPurpose")
 }
 
 pub(crate) struct PendingInteraction {

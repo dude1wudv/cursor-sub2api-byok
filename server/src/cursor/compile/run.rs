@@ -138,12 +138,7 @@ pub(crate) async fn prepare(
         configured_model.configure(&mut model);
     }
     let dynamic = context::dynamic_mcp(request, &request_context)?;
-    let subagent_model_overrides = model::overrides(request)?;
-    let subagents_disabled = subagent_model_overrides
-        .first()
-        .is_some_and(|(_, selection)| {
-            matches!(selection, crate::model::SubagentModelOverride::Disabled)
-        });
+    model::overrides(request)?; // Validate every typed selection before preparing tools.
     let mut checkpoint_prompt = compiler.prompt_spec(
         checkpoint_mode,
         &model,
@@ -153,8 +148,17 @@ pub(crate) async fn prepare(
             .collect::<Vec<_>>(),
         request.suppress_subagent_progress_update_tool == Some(true),
     )?;
-    if subagents_disabled {
-        checkpoint_prompt.tools.retain(|tool| tool.name != "Task");
+    if checkpoint_prompt
+        .tools
+        .iter()
+        .any(|tool| tool.name == "Task")
+    {
+        super::subagents::configure_tools(
+            &mut checkpoint_prompt,
+            request,
+            &request_context,
+            &store.models().await?,
+        );
     }
     let prompt = if compacting {
         compiler.prompt_spec(Mode::Compaction, &model, &[], false)?
@@ -314,14 +318,7 @@ pub(crate) async fn prepare(
         };
         RunAction::Resume { pending_tool_round }
     };
-    let exec = exec_context(
-        request,
-        &request_context,
-        &conversation_id,
-        &model.model_id,
-        subagents_disabled,
-        &subagent_model_overrides,
-    );
+    let exec = exec_context(request, &request_context, &conversation_id, &model.model_id);
     Ok((
         PreparedRun {
             run_id,
@@ -574,19 +571,50 @@ fn exec_context(
     request_context: &pb::RequestContext,
     conversation_id: &ConversationId,
     model_id: &str,
-    subagents_disabled: bool,
-    overrides: &[(
-        crate::model::SubagentKind,
-        crate::model::SubagentModelOverride,
-    )],
 ) -> ExecContext {
-    let subagent_model = overrides.first().map(|(_, value)| match value {
-        crate::model::SubagentModelOverride::Explicit(model) => {
-            SubagentModel::Model(model.model_id.clone())
-        }
-        crate::model::SubagentModelOverride::Inherit => SubagentModel::Model(model_id.into()),
-        crate::model::SubagentModelOverride::Disabled => SubagentModel::Disabled,
-    });
+    let inherited = pb::RequestedModel {
+        model_id: model_id.into(),
+        parameters: request
+            .requested_model
+            .as_ref()
+            .map(|m| m.parameters.clone())
+            .unwrap_or_default(),
+        ..Default::default()
+    };
+    let mut subagent_models = request_context
+        .custom_subagents
+        .iter()
+        .filter_map(|agent| {
+            let id = agent.model.trim();
+            if id.is_empty() || matches!(id, "inherit" | "default") {
+                return None;
+            }
+            let model = request
+                .selected_subagent_models
+                .iter()
+                .find(|model| model.model_id == id)
+                .cloned()
+                .unwrap_or_else(|| pb::RequestedModel {
+                    model_id: id.into(),
+                    ..Default::default()
+                });
+            Some((agent.name.clone(), SubagentModel::Model(model)))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    subagent_models.extend(request.subagent_model_overrides.iter().filter_map(|value| {
+        use pb::subagent_model_override::Selection;
+        let selection = match value.selection.as_ref()? {
+            Selection::Model(model) if model.model_id != "default" => {
+                SubagentModel::Model(model.clone())
+            }
+            Selection::Model(_) | Selection::Inherit(true) => {
+                SubagentModel::Model(inherited.clone())
+            }
+            Selection::Disabled(true) => SubagentModel::Disabled,
+            _ => return None,
+        };
+        Some((value.subagent_type.clone(), selection))
+    }));
     ExecContext {
         conversation_id: conversation_id.to_string(),
         root_conversation_id: request
@@ -594,9 +622,14 @@ fn exec_context(
             .clone()
             .unwrap_or_else(|| conversation_id.to_string()),
         default_subagent_model: model_id.into(),
-        subagent_model,
-        allow_subagents: request.subagent_type_name.is_none() && !subagents_disabled,
-        subagents_disabled,
+        default_subagent_parameters: inherited.parameters,
+        subagent_models,
+        selected_subagent_models: request
+            .selected_subagent_models
+            .iter()
+            .map(|model| (model.model_id.clone(), model.clone()))
+            .collect(),
+        allow_subagents: request.subagent_type_name.is_none(),
         terminals_folder: request_context
             .env
             .as_ref()
@@ -604,5 +637,117 @@ fn exec_context(
             .unwrap_or_default(),
         admin_command_denylist: request_context.admin_command_denylist.clone(),
         mcp_routes: context::meta_mcp_routes(request_context),
+    }
+}
+
+#[cfg(test)]
+mod subagent_selection_tests {
+    use super::*;
+    #[test]
+    fn custom_agent_defaults_are_read_from_native_context() {
+        let custom = pb::RequestContext {
+            custom_subagents: vec![
+                pb::CustomSubagent {
+                    name: "reviewer".into(),
+                    model: "byok-review".into(),
+                    ..Default::default()
+                },
+                pb::CustomSubagent {
+                    name: "writer".into(),
+                    model: "inherit".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let request = pb::AgentRunRequest {
+            selected_subagent_models: vec![pb::RequestedModel {
+                model_id: "byok-review".into(),
+                parameters: vec![pb::requested_model::ModelParameterValue {
+                    id: "effort".into(),
+                    value: "high".into(),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let context = exec_context(
+            &request,
+            &custom,
+            &ConversationId::new("parent"),
+            "parent-model",
+        );
+        let Some(SubagentModel::Model(model)) = context.subagent_models.get("reviewer") else {
+            panic!("custom model")
+        };
+        assert_eq!(model.model_id, "byok-review");
+        assert_eq!(model.parameters[0].value, "high");
+        assert!(!context.subagent_models.contains_key("writer"));
+    }
+
+    #[test]
+    fn selections_remain_per_type_regardless_of_override_order() {
+        use pb::subagent_model_override::Selection;
+        let entries = vec![
+            pb::SubagentModelOverride {
+                subagent_type: "explore".into(),
+                selection: Some(Selection::Disabled(true)),
+            },
+            pb::SubagentModelOverride {
+                subagent_type: "generalPurpose".into(),
+                selection: Some(Selection::Inherit(true)),
+            },
+            pb::SubagentModelOverride {
+                subagent_type: "review".into(),
+                selection: Some(Selection::Model(pb::RequestedModel {
+                    model_id: "official".into(),
+                    parameters: vec![pb::requested_model::ModelParameterValue {
+                        id: "effort".into(),
+                        value: "low".into(),
+                    }],
+                    ..Default::default()
+                })),
+            },
+        ];
+        for reverse in [false, true] {
+            let mut request = pb::AgentRunRequest {
+                requested_model: Some(pb::RequestedModel {
+                    model_id: "parent".into(),
+                    parameters: vec![pb::requested_model::ModelParameterValue {
+                        id: "effort".into(),
+                        value: "high".into(),
+                    }],
+                    ..Default::default()
+                }),
+                subagent_model_overrides: entries.clone(),
+                ..Default::default()
+            };
+            if reverse {
+                request.subagent_model_overrides.reverse();
+            }
+            let context = exec_context(
+                &request,
+                &pb::RequestContext::default(),
+                &ConversationId::new("parent-conversation"),
+                "parent",
+            );
+            assert!(context.allow_subagents);
+            assert!(matches!(
+                context.subagent_models.get("explore"),
+                Some(SubagentModel::Disabled)
+            ));
+            let Some(SubagentModel::Model(inherited)) =
+                context.subagent_models.get("generalPurpose")
+            else {
+                panic!("inherit")
+            };
+            assert_eq!(inherited.model_id, "parent");
+            assert_eq!(inherited.parameters[0].value, "high");
+            let Some(SubagentModel::Model(explicit)) = context.subagent_models.get("review") else {
+                panic!("explicit")
+            };
+            assert_eq!(explicit.model_id, "official");
+            assert_eq!(explicit.parameters[0].value, "low");
+        }
     }
 }

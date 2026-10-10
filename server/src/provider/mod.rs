@@ -121,22 +121,45 @@ fn apply_body_allowlist(
     Ok(())
 }
 
-fn apply_openai_prompt_cache_key(body: &mut serde_json::Value, model_id: &str) -> Result<()> {
+fn apply_openai_prompt_cache_key(
+    body: &mut serde_json::Value,
+    model_id: &str,
+    conversation_id: &str,
+) -> Result<()> {
     if !model_id.to_ascii_lowercase().contains("gpt") {
         return Ok(());
     }
+    if conversation_id.trim().is_empty() {
+        return Err(crate::Error::Protocol(
+            "GPT request requires a conversation ID for session affinity".into(),
+        ));
+    }
+    use sha2::{Digest, Sha256};
+    // Sub2API also uses this field for sticky account routing. A global key
+    // merges unrelated conversations; run/call IDs would change every turn.
+    let digest = hex::encode(Sha256::digest(conversation_id.as_bytes()));
+    let key = format!("cursor-byok:{}", &digest[..52]);
     body.as_object_mut()
         .ok_or_else(|| crate::Error::Provider("provider request body must be an object".into()))?
-        .insert(
-            "prompt_cache_key".into(),
-            serde_json::Value::String("cursor-byok".into()),
-        );
+        .insert("prompt_cache_key".into(), serde_json::Value::String(key));
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn affinity_never_uses_an_empty_conversation_or_changes_non_gpt_requests() {
+        let mut body = serde_json::json!({"model":"gpt-fixture", "prompt_cache_key":"cursor-byok"});
+        assert!(apply_openai_prompt_cache_key(&mut body, "gpt-fixture", "  ").is_err());
+        apply_openai_prompt_cache_key(&mut body, "gpt-fixture", "stable-id").unwrap();
+        assert_ne!(body["prompt_cache_key"], "cursor-byok");
+        let mut non_gpt = serde_json::json!({"model":"deepseek"});
+        let original = non_gpt.clone();
+        apply_openai_prompt_cache_key(&mut non_gpt, "deepseek", "").unwrap();
+        assert_eq!(non_gpt, original);
+    }
 
     #[test]
     fn sse_transport_errors_are_not_relabelled_as_parse_errors() {

@@ -71,6 +71,15 @@ pub(crate) fn from_exec(
             tool.result = Some(result.clone());
         }
         (Some(Tool::TaskToolCall(tool)), Message::SubagentResult(result)) => {
+            let agent_id = match result.result.as_ref() {
+                Some(pb::subagent_result::Result::Success(value)) => Some(value.agent_id.as_str()),
+                Some(pb::subagent_result::Result::Error(value)) => value.agent_id.as_deref(),
+                None => None,
+            }
+            .filter(|id| !id.is_empty());
+            if let (Some(args), Some(id)) = (tool.args.as_mut(), agent_id) {
+                args.agent_id = Some(id.to_owned());
+            }
             tool.result = Some(render::task(result, call, pending.started_at_ms)?);
         }
         (Some(Tool::EditToolCall(tool)), Message::WriteResult(result)) => {

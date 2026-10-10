@@ -158,6 +158,19 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
                 }
             },
             cloud_base_branch: optional_string("cloud_base_branch"),
+            model_parameters: call
+                .arguments
+                .get("model_parameters")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|p| {
+                    Some(pb::requested_model::ModelParameterValue {
+                        id: p.get("id")?.as_str()?.into(),
+                        value: p.get("value")?.as_str()?.into(),
+                    })
+                })
+                .collect(),
             credentials: None,
         }),
         "fetchmcpresource" => Message::ReadMcpResourceExecArgs(pb::ReadMcpResourceExecArgs {
