@@ -13,7 +13,11 @@ use crate::{Error, Result};
 
 const SETTINGS_KEY: &str = "model_token_pricing";
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[path = "pricing_sync.rs"]
+mod sync;
+pub use sync::{PricingSyncSettings, PricingSyncStatus};
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelTokenPrice {
     pub input_per_million: f64,

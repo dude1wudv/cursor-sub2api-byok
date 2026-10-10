@@ -25,6 +25,8 @@ pub struct ControlService {
     cursor_harness: CursorHarness,
     provider: Arc<dyn Provider>,
     model_tests: Arc<Mutex<ModelTestRegistry>>,
+    pub(super) updates: Arc<tokio::sync::Mutex<super::updates::UpdateState>>,
+    pub(super) app_version: String,
 }
 
 // A test ID is scoped to its model. Short-lived tombstones make a DELETE that
@@ -168,10 +170,16 @@ impl ControlService {
             store,
             provider,
             model_tests: Arc::new(Mutex::new(ModelTestRegistry::default())),
+            updates: Arc::default(),
+            app_version: env!("CARGO_PKG_VERSION").into(),
         })
     }
     pub fn cursor_harness(&self) -> &CursorHarness {
         &self.cursor_harness
+    }
+    pub(crate) fn with_app_version(mut self, version: String) -> Self {
+        self.app_version = version;
+        self
     }
     pub async fn connection(&self) -> Result<crate::store::Sub2ApiConnection> {
         self.store.sub2api_connection().await

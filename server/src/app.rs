@@ -56,7 +56,8 @@ impl App {
             WebCache::at(config.runtime_paths.data_dir.join("cache/web"))?,
             plugins.clone(),
         );
-        let control = control::ControlService::new(store.clone(), provider, &config.runtime_paths)?;
+        let control = control::ControlService::new(store.clone(), provider, &config.runtime_paths)?
+            .with_app_version(config.app_version.clone());
         let harness = control.cursor_harness().clone();
         let mut router = api::router(registry.clone(), clients.clone())?;
         router = match &config.console {

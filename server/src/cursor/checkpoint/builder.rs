@@ -1,5 +1,5 @@
 //! Coordinates construction of a complete Cursor checkpoint.
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use prost::Message;
 
@@ -23,6 +23,7 @@ pub struct CheckpointBuilder {
     pub(super) sync: BlobSynchronizer,
     pub(super) parent_tool_call_id: Option<String>,
     parent_transport: Option<TransportHandle>,
+    published: Arc<parking_lot::Mutex<Option<pb::ConversationStateStructure>>>,
     pub(super) base: pb::ConversationStateStructure,
     pub(super) model: String,
     pub(super) max_context_tokens: Option<u64>,
@@ -43,11 +44,13 @@ impl CheckpointBuilder {
         parent_tool_call_id: Option<String>,
         base: Option<pb::ConversationStateStructure>,
     ) -> Self {
+        let published = Arc::new(parking_lot::Mutex::new(base.clone()));
         Self {
             store,
             sync,
             parent_tool_call_id,
             parent_transport: None,
+            published,
             base: base.unwrap_or_default(),
             model: String::new(),
             max_context_tokens: None,
@@ -64,6 +67,23 @@ impl CheckpointBuilder {
 
     pub fn follow_parent(&mut self, handle: TransportHandle) {
         self.parent_transport = Some(handle);
+    }
+
+    pub(crate) fn record_background(
+        &mut self,
+        action: &pb::BackgroundTaskCompletionAction,
+    ) -> bool {
+        let previous = self.base.subagent_runs_by_parent_tool_call_id.clone();
+        super::background::record(&mut self.base, action);
+        previous != self.base.subagent_runs_by_parent_tool_call_id
+    }
+
+    pub(crate) async fn publish_background(&self, handle: &TransportHandle) -> Result<()> {
+        let last = self.published.lock().clone();
+        if let Some(checkpoint) = last {
+            self.publish(handle, &checkpoint).await?;
+        }
+        Ok(())
     }
 
     pub fn configure(
@@ -253,6 +273,14 @@ impl CheckpointBuilder {
                     cloud_requested_environment_build_id: None,
                     machine: args.machine.clone(),
                 });
+            if self
+                .base
+                .subagent_runs_by_parent_tool_call_id
+                .get(tool_call_id)
+                .is_some_and(|run| super::background::terminal(run.status))
+            {
+                continue;
+            }
             self.base.subagent_runs_by_parent_tool_call_id.insert(
                 tool_call_id.clone(),
                 pb::SubagentRunState {
@@ -276,6 +304,24 @@ impl CheckpointBuilder {
         handle: &TransportHandle,
         checkpoint: &pb::ConversationStateStructure,
     ) -> Result<()> {
+        // A completion can arrive after a final checkpoint was built but before
+        // it is published. Merge only newer terminal task state, never history.
+        let mut checkpoint = checkpoint.clone();
+        for (id, run) in &self.base.subagent_runs_by_parent_tool_call_id {
+            if super::background::terminal(run.status)
+                && checkpoint
+                    .subagent_runs_by_parent_tool_call_id
+                    .get(id)
+                    .is_none_or(|old| {
+                        !super::background::terminal(old.status)
+                            || run.completed_timestamp_ms >= old.completed_timestamp_ms
+                    })
+            {
+                checkpoint
+                    .subagent_runs_by_parent_tool_call_id
+                    .insert(id.clone(), run.clone());
+            }
+        }
         tracing::debug!(
             request_id = self.sync.request_id(),
             stable_roots = checkpoint.root_prompt_messages_json.len(),
@@ -288,6 +334,9 @@ impl CheckpointBuilder {
                 pb::agent_server_message::Message::ConversationCheckpointUpdate(checkpoint.clone()),
             ),
         });
+        if result.is_ok() {
+            *self.published.lock() = Some(checkpoint.clone());
+        }
         if let Some(trace) = handle.trace() {
             trace.artifact(
                 "checkpoint",

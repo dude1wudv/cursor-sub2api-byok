@@ -84,7 +84,7 @@ pub(crate) fn open_main_window(app: &AppHandle) -> tauri::Result<()> {
         .initialization_script(format!("if (location.origin === {origin_json}) Object.defineProperty(window, '__SUB2API_CONTROL_TOKEN__', {{value: {token}, writable: false, configurable: false, enumerable: false}});"))
         .on_navigation(move |url| {
             if url.origin().ascii_serialization() == allowed { return true; }
-            if matches!(url.as_str(), "https://microedulab.com/" | "https://github.com/dude1wudv/cursor-sub2api-byok" | "https://github.com/leookun/cursor-byok") {
+            if allowed_external_link(url) {
                 open_about_link(url.as_str());
             }
             false
@@ -93,7 +93,47 @@ pub(crate) fn open_main_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-// Only fixed About links reach this helper; external pages never receive the control token.
+fn allowed_external_link(url: &url::Url) -> bool {
+    if matches!(
+        url.as_str(),
+        "https://microedulab.com/"
+            | "https://github.com/dude1wudv/cursor-sub2api-byok"
+            | "https://github.com/leookun/cursor-byok"
+    ) {
+        return true;
+    }
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    let Some(tail) = url
+        .path()
+        .strip_prefix("/dude1wudv/cursor-sub2api-byok/releases/")
+    else {
+        return false;
+    };
+    let parts: Vec<_> = tail.split('/').collect();
+    let valid_tag = |tag: &str| {
+        !tag.is_empty()
+            && tag.len() <= 128
+            && tag
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
+    };
+    match parts.as_slice() {
+        ["tag", tag] => valid_tag(tag),
+        ["download", tag, "Cursor-Sub2API-BYOK-windows-x64.zip"] => valid_tag(tag),
+        _ => false,
+    }
+}
+
+// Only allowlisted public links reach the browser; no control token is attached.
 fn open_about_link(url: &str) {
     #[cfg(windows)]
     {
@@ -245,4 +285,31 @@ fn show_error(message: &str) {
         .set_level(rfd::MessageLevel::Error)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::allowed_external_link;
+    #[test]
+    fn release_navigation_is_scoped_to_our_public_repository() {
+        for suffix in [
+            "tag/v0.3.0-rc.2",
+            "download/v0.3.0-rc.2/Cursor-Sub2API-BYOK-windows-x64.zip",
+        ] {
+            assert!(allowed_external_link(
+                &format!("https://github.com/dude1wudv/cursor-sub2api-byok/releases/{suffix}")
+                    .parse()
+                    .unwrap()
+            ));
+        }
+        for url in [
+            "https://github.com/other/repo/releases/tag/v1",
+            "https://github.com.evil.test/dude1wudv/cursor-sub2api-byok/releases/tag/v1",
+            "https://token@github.com/dude1wudv/cursor-sub2api-byok/releases/tag/v1",
+            "https://github.com/dude1wudv/cursor-sub2api-byok/releases/tag/v1?token=secret",
+            "https://github.com/dude1wudv/cursor-sub2api-byok/releases/download/v1/other.exe",
+        ] {
+            assert!(!allowed_external_link(&url.parse().unwrap()));
+        }
+    }
 }

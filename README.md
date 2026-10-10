@@ -12,7 +12,7 @@ Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab]
 
 - Windows x64、Microsoft Evergreen WebView2、有效的 Sub2API Base URL/Key，以及自己的 Cursor 登录环境。
 - MicroEduLab 是维护者署名；**EXE 未做 Authenticode 数字签名**，可能出现 SmartScreen 提示。
-- 开发预发布版本；GLM 原生子代理新建、续接、并行后台和打开子对话已实测；**Cursor 3.23.12 单独取消仍失败，GPT/Claude/MCP 与活跃重连未真实验收**。详见[验证范围](docs/VALIDATION.md)。
+- 开发预发布版本；GLM 原生子代理新建、续接、并行后台和打开子对话已实测；**Cursor 3.23.12 / 3.24.12 单独取消仍失败，GPT/Claude/MCP 与活跃重连未真实验收**。详见[验证范围](docs/VALIDATION.md)。
 
 ## 功能
 
@@ -41,7 +41,9 @@ Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab]
 
 BYOK 使用 Cursor 模型目录中的实际 ID；工具会收到已配置模型的名称与路由 ID。官方模型仍走 Cursor 官方并受原账号权限约束。同模型继承推理参数，显式选择其他模型使用其原生选择参数；续接已有子代理时保留原子会话模型。失败结果若带子对话 ID，也会保留供 Cursor 打开查看。
 
-已知限制：Cursor 3.23.12 子卡片的单独 Stop 会在 agent-host 客户端丢弃取消动作；后台列表 Stop 的本轮实测也未终止子任务。3.24.12 静态审查仍存在相同的子卡片取消缺口，新版真实模型行为尚未复验。不要将卡片短暂显示 Stopped 视为已停止用量。尚未修改 Cursor 安装文件，也没有用父模型代做或伪造完成来绕过问题。
+已知限制：Cursor 3.23.12 子卡片的单独 Stop 会在 agent-host 客户端丢弃取消动作；后台列表 Stop 的实测也未终止子任务。3.24.12 用户复测仍有相同缺口，界面 Stopped 后子任务继续完成，父对话随后收到结果。不要将卡片短暂显示 Stopped 视为已停止用量。按用户决定不实施客户端补丁，保持不修改 Cursor 安装文件。
+
+后台 shell 完成与子代理完成是两种通知：Cursor 调度完成事件，BYOK 将需要唤醒的事件转换为通知和跟进回合。rc.2 遵循 Cursor 3.24.12 的 `record_only`，只记录的事件不启动模型，正常完成通知仍可唤醒；停止父 Task 不保证终止已经后台化的 shell。需要停止命令时使用 Cursor 对应后台终端的原生停止入口，不能把通知静默当作停止进程。
 
 GPT 的 `prompt_cache_key` 按 Cursor 对话 ID 哈希生成，同一对话跨轮次稳定，不同对话和子代理隔离。它为 Sub2API 提供稳定的粘滞标识，不能保证上游账号限流、余额不足或失效时仍不切换。新版本首次使用会从旧的全局标识切换为对话标识，可能发生一次重新绑定。
 
@@ -50,6 +52,8 @@ GPT 的 `prompt_cache_key` 按 Cursor 对话 ID 哈希生成，同一对话跨�
 - **调用记录**：分页与时间、模型、结果筛选；仅显示必要元数据、脱敏错误、HTTP 状态、耗时、首响应、Token、缓存和关联 ID。请求诊断区分本地协议路由和官方转发，可追踪父请求或 Task ID。默认不采集完整对话。
 - **模型管理**：批量测试可取消对应请求，逐模型显示结果；复制模型共享连接 Key，分组与排序持久化。测试会产生所选模型的真实用量，仅在点击后执行。
 - **用量与费用**：自选日期、多模型与本地时区贡献日历；缓存读取率使用总输入加权汇总。单价按每百万 Token 配置输入、输出、缓存读、缓存写及币种。费用是“本地估算”，当前价格应用于所选历史区间，未定价模型单独标出，不代表 Sub2API 账单。
+- **CC Switch 单价同步**：默认只读当前用户目录 `.cc-switch/model-pricing.json`，按 USD／每百万 Token 导入输入、输出、缓存读、缓存创建价格。用量页每 30 秒刷新及估算前检查；精确模型 ID 优先，其次唯一的去提供商前缀匹配，不推测不同型号。源文件错误、缺价或歧义保留旧价格并提示；无旧价格的模型不计入金额。可改路径或关闭同步，关闭后保留最后价格并允许手动编辑。源文件不含币种，此 USD 约定不会自动做汇率换算。
+- **软件更新**：关于页默认启动时及运行期间每 6 小时检查本仓库公开 Release；可关闭自动检查或排除预发布。仅列出含完整 Windows 发布资产的版本，按版本号比较，手动检查最短间隔一分钟。使用应用出站代理，失败不改直连；不发送模型 Key、账号或对话。不自动下载或安装，下载 ZIP 后校验 SHA256SUMS，退出 Cursor 与控制器后再替换。
 - **网络**：分别设置应用出站代理、loopback 接管端口与管理端口。代理失败不自动转直连；代理密码用 DPAPI 保护。管理端口重启生效，接管端口下次开启生效，0 表示自动分配。接管期间锁定变更。
 - **临时订阅缓存**：网络页面默认关闭，每次手动同意后临时设置 `ultra / active`。会改变客户端门控，可能随 Cursor 遥测发送，但不会提升官方真实权限。官方刷新可覆盖，本工具不持续强写。关闭、退出或崩溃恢复时只还原仍等于注入值的缓存及派生 JSON 叶字段，保留第三方变化；账号归属变化则不恢复旧账号值。必须完全退出 Cursor 才能操作。详见 [字段与恢复边界](docs/account-injection.md)。
 
@@ -84,7 +88,7 @@ cargo test -p cursor-server --lib --tests
 pwsh -NoProfile -File scripts/build-portable.ps1
 ```
 
-脚本执行 frozen install、两个 TypeScript 检查及 `tauri build --no-bundle`，交付 EXE、LICENSE、THIRD-PARTY-NOTICES.txt、SHA256SUMS.txt 和相邻 ZIP。默认输出 `dist/windows-x64`，可用 `-OutputDirectory <absolute-path>` 指定目录。没有安装器、自动更新或开机自启。
+脚本执行 frozen install、两个 TypeScript 检查及 `tauri build --no-bundle`，交付 EXE、LICENSE、THIRD-PARTY-NOTICES.txt、SHA256SUMS.txt 和相邻 ZIP。默认输出 `dist/windows-x64`，可用 `-OutputDirectory <absolute-path>` 指定目录。提供自动版本检查，没有安装器、自动安装或开机自启。
 
 自动化测试使用临时数据、合成 Key 与 loopback fixture。真实 Cursor/GPT/Claude/MCP 闭环必须使用用户自行登录的专用环境和专用 Key 单独验收。
 

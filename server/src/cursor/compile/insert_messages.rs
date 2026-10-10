@@ -40,6 +40,9 @@ pub(super) fn project(
     let mut has_shell = false;
     let mut has_subagent = false;
     for completion in &action.completions {
+        if completion.record_only {
+            continue;
+        }
         let kind = pb::BackgroundTaskKind::try_from(completion.kind).map_err(|_| {
             Error::Protocol(format!("unknown background task kind: {}", completion.kind))
         })?;

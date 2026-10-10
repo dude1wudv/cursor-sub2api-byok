@@ -220,30 +220,46 @@ impl ConversationOutput {
                 Input::CompletionResult(None) => {
                     return Err(Error::Protocol("tool result channel closed".into()));
                 }
-                Input::RuntimeAction(Some(action)) => match *action {
-                    RuntimeAction::Inject(action) => {
-                        self.forward_injection(
-                            action,
-                            active_round.as_ref(),
-                            &active_tool_calls,
-                            &completions,
-                            &mut interrupted_rounds,
-                            &mut interrupted_tool_calls,
-                        )
-                        .await?;
+                Input::RuntimeAction(Some(action)) => {
+                    match *action {
+                        RuntimeAction::RecordBackground(action) => {
+                            self.checkpoint.record_background(&action);
+                            let (sender, receiver) = oneshot::channel();
+                            worker.jobs.send(CheckpointJob {
+                                kind: CheckpointKind::RecordBackground(action),
+                                presentation: Default::default(),
+                                context_tokens: None,
+                                ready: Some(sender),
+                            }).await.map_err(|_| Error::Protocol(
+                                "checkpoint worker closed before background state was recorded".into()
+                            ))?;
+                            receiver.await.map_err(|_| Error::Protocol("checkpoint worker stopped before background state was recorded".into()))?
+                                .map_err(Error::Protocol)?;
+                        }
+                        RuntimeAction::Inject(action) => {
+                            self.forward_injection(
+                                action,
+                                active_round.as_ref(),
+                                &active_tool_calls,
+                                &completions,
+                                &mut interrupted_rounds,
+                                &mut interrupted_tool_calls,
+                            )
+                            .await?;
+                        }
+                        RuntimeAction::UserMessage(action) => {
+                            self.forward_user_message(
+                                action,
+                                active_round.as_ref(),
+                                &active_tool_calls,
+                                &completions,
+                                &mut interrupted_rounds,
+                                &mut interrupted_tool_calls,
+                            )
+                            .await?;
+                        }
                     }
-                    RuntimeAction::UserMessage(action) => {
-                        self.forward_user_message(
-                            action,
-                            active_round.as_ref(),
-                            &active_tool_calls,
-                            &completions,
-                            &mut interrupted_rounds,
-                            &mut interrupted_tool_calls,
-                        )
-                        .await?;
-                    }
-                },
+                }
                 Input::RuntimeAction(None) => {
                     return Err(Error::Protocol("runtime action channel closed".into()));
                 }
@@ -758,10 +774,9 @@ impl ConversationOutput {
                                 self.checkpoint
                                     .publish(&self.handle, &checkpoints.settled)
                                     .await?;
-                                self.handle.emit(&pb::AgentServerMessage {
-                                    ttft_breakdown: None,
-                                    message: Some(pb::agent_server_message::Message::ConversationCheckpointUpdate(checkpoints.settled)),
-                                })?;
+                                self.checkpoint
+                                    .publish(&self.handle, &checkpoints.settled)
+                                    .await?;
                                 Ok(RunFinish::TurnCompleted)
                             }
                             RunOutcome::Cancelled => {

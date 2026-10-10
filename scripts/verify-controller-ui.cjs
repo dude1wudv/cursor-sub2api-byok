@@ -31,6 +31,8 @@ let browser;
     const req=route.request(); assert.equal(req.headers()['x-sub2api-control-token'],'synthetic-ui-token');
     const url=new URL(req.url()), endpoint=url.pathname.split('/api/')[1];
     const send=(body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
+    if(endpoint==='updates' && req.method()==='GET') return send({current_version:'0.3.0-rc.2',preferences:{automatic:false,include_prereleases:true},checked_at_ms:null,error:null,latest:null,update_available:false});
+    if(endpoint==='pricing/sync' && req.method()==='GET') return send({settings:{enabled:false,source_path:'C:\\Synthetic\\model-pricing.json'},checked_at_ms:null,synced_at_ms:null,stale:false,error:null,matched:{},unmatched:[],ambiguous:[]});
     if(endpoint==='harness/cursor/status') return send(status());
     if(endpoint==='harness/cursor/subscription' && req.method()==='PUT') {
       const body=req.postDataJSON();subscriptionCalls.push(body);

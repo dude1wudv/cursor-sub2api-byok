@@ -18,6 +18,7 @@ use crate::{
 use super::{context, images};
 
 pub(crate) enum RuntimeAction {
+    RecordBackground(pb::BackgroundTaskCompletionAction),
     Inject(pb::InjectContextAction),
     UserMessage(pb::UserMessageAction),
 }

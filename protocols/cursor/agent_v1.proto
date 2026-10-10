@@ -873,6 +873,8 @@ message BackgroundTaskCompletion {
   optional string subagent_id = 9;
   optional string tool_call_id = 10;
   BackgroundTaskNotificationContext notification_context = 11;
+  optional uint64 completed_at_ms = 12;
+  bool record_only = 13;
 }
 
 // Copied from: local:agent.v1.BackgroundTaskCompletionAction (var: tvs)

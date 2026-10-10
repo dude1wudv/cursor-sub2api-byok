@@ -1,5 +1,31 @@
 # 验证范围
 
+## v0.3.0-rc.2 — 2026-10-10（预发布）
+
+### 本轮范围与验证边界
+
+窄窗口模型筛选、GitHub Release 自动检查、CC Switch USD 单价只读同步，以及 Cursor 3.24.12 后台通知的 record-only 协议兼容。
+
+最终 `cargo test --workspace --all-targets`：27 个测试目标，343 passed、0 failed、0 ignored；包含 7 项 record-only 直接回归及隔离恢复检查。`cargo clippy --workspace --all-targets -- -D warnings`、前端 TypeScript 检查及 Vite 构建通过。`scripts/build-portable.ps1` 的 Windows Tauri no-bundle release 构建及便携打包通过；仅有既存 PDB 同名和 MSVC 链接器提示，EXE 未签名。最终日志保存在忽略目录 `tmp/validation-rc2/owned-worker/`，不使用其他 Agent 的在飞日志作为最终结果。
+
+EXE SHA-256：`11b481684c67b76d4ff50a303f0581f2ed5b5b7265083f94234d844b92930721`；ZIP SHA-256：`65d217e324a5fe8a702005de4baba57f61cf91baf9871761ca5d70bd5eb6290e`。
+
+合成浏览器检查覆盖 780/940/1200/1920px 标签布局、筛选保持、更新自动检查与偏好、错误措辞、价格同步锁定/关闭/路径草稿隔离及缺价提示；既有控制台交互回归也通过。仅使用合成响应，没有读取真实 Key 或发送模型请求。真实 GitHub 匿名 GET 经指定代理返回 403 限流，已停止；成功更新查询尚未在线确认，不能用 fixture 声称线上通过。
+
+### 后台通知定位与兼容
+
+用户提供的 shell 完成报告并非完全由客户端拼接：Cursor 维护后台 shell 并投递 `BackgroundTaskCompletionAction`；本仓库 `compile/insert_messages.rs` 生成 `<system_notification>` 与 `SHELL_FOLLOW_UP`，`compile/run.rs` 原先对完成通知统一启动模型回合。这与子代理 Task 的最终结果是不同事件。Cursor 3.24.12 会等待父会话可运行后再派发通知，完成时刻与唤醒时刻不一定一致。
+
+只读核对本机 3.24.12 agent-host，`BackgroundTaskCompletion` field 12 为 optional uint64 `completed_at_ms`、field 13 为 bool `record_only`。官方处理纯 record-only 时仅记录状态，不运行模型。旧控制器缺少这两个字段，已确认存在兼容缺口；rc.2 修复该缺口，并保留未标记通知的正常唤醒语义。纯记录子代理终态只合并对应 task 状态，不改对话历史；活跃运行经串行 checkpoint 队列记录，不重启当前模型。日志仅增加通知类型、原因、状态、task/tool/父子关联 ID、接收时间和唤醒意图，不增加命令、输出、标题或对话采集。
+
+本例终端元数据可核验：task 86495 于 08:58:36.659 UTC 退出 101；task 86496 于 09:04:58.147 UTC 退出 0。对应子请求此前关联到父请求，子 run 到 09:08:40.482 UTC 才记为 cancelled；父会话期间多次产生后续请求。这些证据说明停止、子请求和后台 shell 生命周期不同，**不能证明本例收到的通知携带 record_only=true**，也不能证明发生了错误父子路由。未采集完整请求来补造结论；后续真实复测可依据新增最小元数据定位。
+
+### 恢复与真实模型
+
+中途 `clean_start_control_auth_and_connection_contract` 在 Cursor 仍运行时失败。入口在恢复前先调用 `require_cursor_closed()`；初始日志没有响应体，不能据此判断为空 journal 恢复或幂等缺陷。已增强失败诊断，保留原断言；Cursor 退出后单项及当时完整 336 项回归通过。
+
+本轮不操作真实订阅缓存、不重跑真实 EXE 崩溃恢复或首次 CA 安装/卸载。隔离恢复测试与实际 Windows 恢复证据分开记录；旧版本实机通过仍仅为历史证据。没有新增付费模型请求。GLM 既有成功范围不扩大；原生单独取消仍有已知限制，GPT/Claude/MCP 与活跃重连仍未真实验收，record-only 修复也尚未真实 Cursor 复测。不修改 Cursor 安装文件。
+
 ## v0.3.0-rc.1 — 2026-10-10（预发布）
 
 ### 代码与构建

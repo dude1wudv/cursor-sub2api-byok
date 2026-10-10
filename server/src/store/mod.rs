@@ -17,6 +17,7 @@ mod overview;
 pub use overview::UsageCalendarDay;
 mod pricing;
 pub use pricing::{CostEstimate, ModelCostEstimate, ModelPricingSettings, ModelTokenPrice};
+pub use pricing::{PricingSyncSettings, PricingSyncStatus};
 mod runs;
 mod settings;
 mod sqlite;

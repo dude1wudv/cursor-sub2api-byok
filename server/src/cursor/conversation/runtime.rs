@@ -30,6 +30,50 @@ pub struct ConversationRuntime;
 
 const CONTINUATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+fn record_only(action: &pb::BackgroundTaskCompletionAction) -> bool {
+    !action.completions.is_empty()
+        && action
+            .completions
+            .iter()
+            .all(|completion| completion.record_only)
+}
+
+fn diagnostic_id(value: Option<&str>) -> &str {
+    value
+        .filter(|value| {
+            value.len() <= 160
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b))
+        })
+        .unwrap_or("unavailable")
+}
+
+// Metadata only: never log the command, title, detail, output path, or message body.
+fn log_background(
+    handle: &TransportHandle,
+    action: &pb::BackgroundTaskCompletionAction,
+    source: &str,
+) {
+    let parent = handle.parent();
+    for completion in &action.completions {
+        tracing::info!(
+            request_id = diagnostic_id(Some(handle.request_id())),
+            conversation_id = diagnostic_id(handle.conversation_id()),
+            parent_request_id = diagnostic_id(parent.as_ref().and_then(|parent| parent.request_id.as_deref())),
+            parent_tool_call_id = diagnostic_id(parent.as_ref().and_then(|parent| parent.tool_call_id.as_deref())),
+            task_id = diagnostic_id(Some(&completion.task_id)),
+            tool_call_id = diagnostic_id(completion.tool_call_id.as_deref()),
+            subagent_id = diagnostic_id(completion.subagent_id.as_deref()),
+            kind = completion.kind, reason = completion.reason, status = completion.status,
+            record_only = completion.record_only, completed_at_ms = ?completion.completed_at_ms,
+            received_at_ms = chrono::Utc::now().timestamp_millis(), source,
+            wake_requested = !completion.record_only && completion.reason == pb::BackgroundTaskCompletionReason::TaskFinished as i32,
+            "Cursor background completion received"
+        );
+    }
+}
+
 #[derive(Clone)]
 struct RunGeneration {
     id: u64,
@@ -203,14 +247,8 @@ impl ConversationRuntime {
                             {
                                 match message.message {
                                     Some(pb::agent_client_message::Message::RunRequest(
-                                        request,
+                                        mut request,
                                     )) => {
-                                        waiting_for_action = false;
-                                        if draining {
-                                            handle.reopen();
-                                            draining = false;
-                                            pending_finish = None;
-                                        }
                                         if let Some(conversation_id) =
                                             request.conversation_id.as_deref()
                                         {
@@ -225,6 +263,28 @@ impl ConversationRuntime {
                                                 let _ = super::finish_failed(&handle, &error);
                                                 return;
                                             }
+                                        }
+                                        if let Some(pb::conversation_action::Action::BackgroundTaskCompletionAction(action)) = request.action.as_ref().and_then(|action| action.action.as_ref()) {
+                                            log_background(&handle, action, "run_request");
+                                            if let Some(state) = request.conversation_state.as_mut() {
+                                                crate::cursor::checkpoint::background::record(state, action);
+                                            }
+                                            if record_only(action) {
+                                                if current.as_ref().is_some_and(|generation| generation.runtime_actions.send(compile::RuntimeAction::RecordBackground(action.clone())).is_ok()) {
+                                                    continue;
+                                                }
+                                                if let Some(state) = request.conversation_state {
+                                                    let _ = handle.emit(&pb::AgentServerMessage { message: Some(pb::agent_server_message::Message::ConversationCheckpointUpdate(state)), ..Default::default() });
+                                                }
+                                                super::finish_success(&handle);
+                                                return;
+                                            }
+                                        }
+                                        waiting_for_action = false;
+                                        if draining {
+                                            handle.reopen();
+                                            draining = false;
+                                            pending_finish = None;
                                         }
                                         start_generation(
                                             &registry,
@@ -401,6 +461,12 @@ impl ConversationRuntime {
                                             conversation_action,
                                         ),
                                     ) => match conversation_action.action.clone() {
+                                        Some(pb::conversation_action::Action::BackgroundTaskCompletionAction(action)) if record_only(&action) => {
+                                            log_background(&handle, &action, "runtime_action");
+                                            if let Some(generation) = current.as_ref() {
+                                                let _ = generation.runtime_actions.send(compile::RuntimeAction::RecordBackground(action));
+                                            }
+                                        }
                                         Some(
                                             pb::conversation_action::Action::UserMessageAction(
                                                 action,

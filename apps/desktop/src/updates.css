@@ -1,0 +1,6 @@
+.updates-card { margin-top: 20px; }
+.update-options { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.update-options label { flex: 0 1 auto; flex-direction: row; align-items: center; }
+.update-options input { width: auto; flex: 0 0 auto; margin: 0; }
+.update-result { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.update-result strong { overflow-wrap: anywhere; }

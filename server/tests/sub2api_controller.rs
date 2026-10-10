@@ -143,15 +143,16 @@ async fn clean_start_control_auth_and_connection_contract() {
     assert_eq!(*seen.lock().unwrap(), vec!["/v1/responses", "/v1/messages"]);
     upstream_task.abort();
     for _ in 0..2 {
-        assert!(client
+        let response = client
             .put(format!("{root}/harness/cursor/enabled"))
             .header("X-Sub2API-Control-Token", &token)
             .json(&json!({"enabled":false}))
             .send()
             .await
-            .unwrap()
-            .status()
-            .is_success());
+            .unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert!(status.is_success(), "{status} {body}");
     }
     assert_eq!(std::fs::read(sentinel).unwrap(), b"sentinel-never-opened");
     shutdown.cancel();

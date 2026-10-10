@@ -8,6 +8,7 @@ mod network;
 mod overview;
 mod pricing;
 mod service;
+mod updates;
 
 use axum::{
     body::{to_bytes, Body},
@@ -107,6 +108,12 @@ fn proxy_error(error: impl std::fmt::Display) -> Response<Body> {
 pub fn api_router(service: ControlService) -> Router {
     Router::new()
         .route(
+            "/__byok-api__/api/updates",
+            get(updates::get)
+                .post(updates::check)
+                .put(updates::preferences),
+        )
+        .route(
             "/__byok-api__/api/models",
             get(models::list).post(models::create),
         )
@@ -130,6 +137,10 @@ pub fn api_router(service: ControlService) -> Router {
             get(pricing::get).put(pricing::put),
         )
         .route("/__byok-api__/api/pricing/estimate", get(pricing::estimate))
+        .route(
+            "/__byok-api__/api/pricing/sync",
+            get(pricing::get_sync).put(pricing::put_sync),
+        )
         .route("/__byok-api__/api/network", get(network::get))
         .route("/__byok-api__/api/network/ports", put(network::ports))
         .route("/__byok-api__/api/network/proxy", put(network::proxy))

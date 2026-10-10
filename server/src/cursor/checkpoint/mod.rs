@@ -1,5 +1,6 @@
 //! Builds, publishes, and restores Cursor Conversation checkpoints.
 
+pub(crate) mod background;
 mod builder;
 mod derived;
 pub mod messages;

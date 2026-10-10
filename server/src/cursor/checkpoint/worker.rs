@@ -20,6 +20,7 @@ pub(crate) struct CheckpointJob {
 }
 
 pub(crate) enum CheckpointKind {
+    RecordBackground(pb::BackgroundTaskCompletionAction),
     Settled(CheckpointId),
     ToolStarted {
         round_id: ToolRoundId,
@@ -63,6 +64,13 @@ impl CheckpointWorker {
                 let presentation = job.presentation;
                 let ready = job.ready;
                 let result = match job.kind {
+                    CheckpointKind::RecordBackground(action) => {
+                        if builder.record_background(&action) {
+                            builder.publish_background(&handle).await
+                        } else {
+                            Ok(())
+                        }
+                    }
                     CheckpointKind::Settled(checkpoint_id)
                     | CheckpointKind::ToolSettled(checkpoint_id) => {
                         publish_settled(
