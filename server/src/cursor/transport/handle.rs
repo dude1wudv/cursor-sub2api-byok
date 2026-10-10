@@ -19,8 +19,8 @@ use super::{OutputHub, TransportAdmission, TransportLifecycle};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportParent {
-    pub request_id: String,
-    pub tool_call_id: String,
+    pub request_id: Option<String>,
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -29,7 +29,7 @@ pub struct TransportHandle {
     commands: mpsc::Sender<TransportCommand>,
     output: Arc<OutputHub>,
     conversation_id: Arc<OnceLock<String>>,
-    parent: Arc<OnceLock<TransportParent>>,
+    parent: Arc<parking_lot::Mutex<Option<TransportParent>>>,
     trace: CursorTraceRecorder,
     lifecycle: TransportLifecycle,
     disconnect: CancellationToken,
@@ -55,7 +55,7 @@ impl TransportHandle {
             commands,
             output,
             conversation_id: Arc::new(OnceLock::new()),
-            parent: Arc::new(OnceLock::new()),
+            parent: Arc::default(),
             trace,
             lifecycle: TransportLifecycle::new(),
             disconnect: CancellationToken::new(),
@@ -90,21 +90,34 @@ impl TransportHandle {
     }
 
     pub fn set_parent(&self, parent: TransportParent) -> Result<()> {
-        if parent.request_id.is_empty() || parent.tool_call_id.is_empty() {
-            return Err(Error::Protocol("Cursor parent ids are required".into()));
+        if parent.request_id.as_deref() == Some("") || parent.tool_call_id.as_deref() == Some("") {
+            return Err(Error::Protocol(
+                "Cursor parent ids must not be empty".into(),
+            ));
         }
-        if self.parent.get().is_some_and(|current| current != &parent) {
+        let mut current = self.parent.lock();
+        let conflicts =
+            |a: &Option<String>, b: &Option<String>| a.is_some() && b.is_some() && a != b;
+        if current.as_ref().is_some_and(|current| {
+            conflicts(&current.request_id, &parent.request_id)
+                || conflicts(&current.tool_call_id, &parent.tool_call_id)
+        }) {
             return Err(Error::Protocol(format!(
                 "conflicting parent ids for request {}",
                 self.request_id
             )));
         }
-        let _ = self.parent.set(parent);
+        if let Some(current) = current.as_mut() {
+            current.request_id = parent.request_id.or_else(|| current.request_id.clone());
+            current.tool_call_id = parent.tool_call_id.or_else(|| current.tool_call_id.clone());
+        } else {
+            *current = Some(parent);
+        }
         Ok(())
     }
 
-    pub fn parent(&self) -> Option<&TransportParent> {
-        self.parent.get()
+    pub fn parent(&self) -> Option<TransportParent> {
+        self.parent.lock().clone()
     }
 
     pub async fn command(&self, command: TransportCommand) -> Result<()> {

@@ -103,14 +103,9 @@ impl ProxyRuntime {
 
 async fn bind_proxy_listener(requested_port: u16) -> Result<TcpListener> {
     let requested = SocketAddr::from(([127, 0, 0, 1], requested_port));
-    match TcpListener::bind(requested).await {
-        Ok(listener) => Ok(listener),
-        Err(error) if requested_port != 0 => {
-            tracing::warn!(%requested, %error, "configured proxy port unavailable; selecting a random port");
-            Ok(TcpListener::bind("127.0.0.1:0").await?)
-        }
-        Err(error) => Err(error.into()),
-    }
+    TcpListener::bind(requested)
+        .await
+        .map_err(|_| Error::Config(format!("接管端口 {requested_port} 已被占用或不可用")))
 }
 
 #[derive(Clone)]
@@ -125,6 +120,25 @@ impl HttpHandler for CursorRelay {
         mut request: Request<Body>,
     ) -> RequestOrResponse {
         let original = request.uri().clone();
+        if is_cursor_host(original.host().unwrap_or_default())
+            && request
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split_once(' '))
+                .is_some_and(|(scheme, token)| {
+                    scheme.eq_ignore_ascii_case("bearer")
+                        && super::account::is_placeholder_token(token.trim())
+                })
+        {
+            return hudsucker::hyper::Response::builder()
+                .status(401)
+                .body(Body::from(
+                    "Local placeholder credentials cannot access Cursor official services",
+                ))
+                .expect("static response")
+                .into();
+        }
         let locally_routed = is_local_path(original.path());
         if is_cursor_host(original.host().unwrap_or_default()) && locally_routed {
             if let Ok(value) = original.to_string().parse() {

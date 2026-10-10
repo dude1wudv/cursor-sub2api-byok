@@ -127,7 +127,7 @@ pub(crate) async fn prepare(
         starts_turn,
         compacting,
         background_completion,
-    } = action(request)?;
+    } = action(request, request_id)?;
     let checkpoint_mode = if request.subagent_type_name.is_some() {
         Mode::Subagent
     } else {
@@ -148,6 +148,7 @@ pub(crate) async fn prepare(
             .collect::<Vec<_>>(),
         request.suppress_subagent_progress_update_tool == Some(true),
     )?;
+    let byok_models = store.models().await?;
     if checkpoint_prompt
         .tools
         .iter()
@@ -157,7 +158,7 @@ pub(crate) async fn prepare(
             &mut checkpoint_prompt,
             request,
             &request_context,
-            &store.models().await?,
+            &byok_models,
         );
     }
     let prompt = if compacting {
@@ -318,7 +319,8 @@ pub(crate) async fn prepare(
         };
         RunAction::Resume { pending_tool_round }
     };
-    let exec = exec_context(request, &request_context, &conversation_id, &model.model_id);
+    let mut exec = exec_context(request, &request_context, &conversation_id, &model.model_id);
+    super::subagents::configure_model_aliases(&mut exec, &byok_models);
     Ok((
         PreparedRun {
             run_id,
@@ -390,7 +392,7 @@ fn execution_run_id(request_id: &str) -> RunId {
     RunId::new(format!("{request_id}:{}", &execution_id[..8]))
 }
 
-fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
+fn action(request: &pb::AgentRunRequest, request_id: &str) -> Result<ActionProjection> {
     let conversation_mode = request
         .conversation_state
         .as_ref()
@@ -414,7 +416,7 @@ fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
     };
     match action {
         pb::conversation_action::Action::UserMessageAction(action) => {
-            let user = action.user_message.as_ref().ok_or_else(|| {
+            let mut user = action.user_message.clone().ok_or_else(|| {
                 Error::Protocol("Cursor user message action has no UserMessage".into())
             })?;
             let mode = if user.mode == pb::AgentMode::Unspecified as i32 {
@@ -423,9 +425,35 @@ fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
                 user.mode
             };
             if user.message_id.is_empty() {
-                return Err(Error::Protocol(
-                    "Cursor user message action has no message_id".into(),
-                ));
+                if request
+                    .subagent_type_name
+                    .as_deref()
+                    .is_none_or(str::is_empty)
+                {
+                    return Err(Error::Protocol(
+                        "Cursor user message action has no message_id".into(),
+                    ));
+                }
+                // Cursor 3.23.12 agent-host child actions omit messageId. The
+                // original generation runId survives retry attempts; never use
+                // prompt text or a random UUID as the input's identity.
+                use sha2::{Digest, Sha256};
+                let generation = request
+                    .run_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or(request_id);
+                if request.run_id.as_deref().is_none_or(str::is_empty) {
+                    tracing::warn!(
+                        request_id,
+                        "subagent input identity falls back to attempt ID: generation ID absent"
+                    );
+                }
+                let identity = serde_json::to_vec(&(
+                    request.conversation_id.as_deref().unwrap_or(request_id),
+                    generation,
+                ))?;
+                user.message_id = format!("subagent-input:{:x}", Sha256::digest(identity));
             }
             if user.text.trim() == "/summarize" {
                 return Ok(ActionProjection {
@@ -594,11 +622,14 @@ fn exec_context(
                 .iter()
                 .find(|model| model.model_id == id)
                 .cloned()
-                .unwrap_or_else(|| pb::RequestedModel {
-                    model_id: id.into(),
-                    ..Default::default()
+                .map(SubagentModel::Model)
+                .unwrap_or_else(|| {
+                    SubagentModel::NamedModel(pb::RequestedModel {
+                        model_id: id.into(),
+                        ..Default::default()
+                    })
                 });
-            Some((agent.name.clone(), SubagentModel::Model(model)))
+            Some((agent.name.clone(), model))
         })
         .collect::<std::collections::HashMap<_, _>>();
     subagent_models.extend(request.subagent_model_overrides.iter().filter_map(|value| {
@@ -629,6 +660,7 @@ fn exec_context(
             .iter()
             .map(|model| (model.model_id.clone(), model.clone()))
             .collect(),
+        byok_model_aliases: Default::default(),
         allow_subagents: request.subagent_type_name.is_none(),
         terminals_folder: request_context
             .env
@@ -643,6 +675,64 @@ fn exec_context(
 #[cfg(test)]
 mod subagent_selection_tests {
     use super::*;
+    #[test]
+    fn agent_host_child_input_identity_survives_attempts_and_separates_generations() {
+        let mut request = pb::AgentRunRequest {
+            conversation_id: Some("child-a".into()),
+            run_id: Some("generation-a".into()),
+            subagent_type_name: Some("explore".into()),
+            action: Some(pb::ConversationAction {
+                action: Some(pb::conversation_action::Action::UserMessageAction(
+                    pb::UserMessageAction {
+                        user_message: Some(pb::UserMessage {
+                            text: "synthetic input".into(),
+                            mode: pb::AgentMode::Agent as i32,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let first = action(&request, "attempt-a").unwrap();
+        assert_eq!(
+            first.input_id,
+            action(&request, "attempt-b").unwrap().input_id
+        );
+        assert_eq!(
+            first.input_id,
+            Some(format!(
+                "cursor:user:{}",
+                first.turn_user.unwrap().message_id
+            ))
+        );
+        request.run_id = Some("generation-b".into());
+        assert_ne!(
+            first.input_id,
+            action(&request, "attempt-a").unwrap().input_id
+        );
+        request.run_id = Some("generation-a".into());
+        request.conversation_id = Some("child-b".into());
+        assert_ne!(
+            first.input_id,
+            action(&request, "attempt-a").unwrap().input_id
+        );
+        request.subagent_type_name = None;
+        assert!(action(&request, "attempt-a").is_err());
+        let Some(pb::conversation_action::Action::UserMessageAction(user)) =
+            request.action.as_mut().unwrap().action.as_mut()
+        else {
+            unreachable!()
+        };
+        user.user_message.as_mut().unwrap().message_id = "explicit-message".into();
+        assert_eq!(
+            action(&request, "attempt-a").unwrap().input_id.as_deref(),
+            Some("cursor:user:explicit-message")
+        );
+    }
+
     #[test]
     fn custom_agent_defaults_are_read_from_native_context() {
         let custom = pb::RequestContext {

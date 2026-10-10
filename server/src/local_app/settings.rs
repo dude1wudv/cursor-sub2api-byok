@@ -132,7 +132,7 @@ impl SettingsPatch {
             .ok_or_else(|| Error::Config("settings patch has no prepared write".into()))?;
         let current = read_optional(&self.path)?;
         let current = current.as_deref().unwrap_or_default();
-        if sha256(&current) == sha256(patched) && current == patched.as_slice() {
+        if sha256(current) == sha256(patched) && current == patched.as_slice() {
             if self.original_exists {
                 write_atomic(&self.path, &self.original_bytes)?;
             } else if self.path.exists() {
@@ -483,12 +483,11 @@ mod recovery_tests {
         fs::write(&path, &edited).unwrap();
         assert!(patch.restore().is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), edited);
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        let original_permissions = fs::metadata(&path).unwrap().permissions();
+        let mut permissions = original_permissions.clone();
         permissions.set_readonly(true);
         fs::set_permissions(&path, permissions).unwrap();
         assert!(SettingsPatch::prepare(&path).is_err());
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        permissions.set_readonly(false);
-        fs::set_permissions(&path, permissions).unwrap();
+        fs::set_permissions(&path, original_permissions).unwrap();
     }
 }

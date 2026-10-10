@@ -1,0 +1,6 @@
+.inspection-filters { display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0; }
+.table-scroll { overflow-x:auto;margin:16px 0; }
+.inspection table { width:100%;border-collapse:collapse;font-size:12px; }
+.inspection th,.inspection td { text-align:left;padding:12px 8px;border-bottom:1px solid #dfe5f0;vertical-align:top; }
+.inspection th { color:#626d89;white-space:nowrap; }.inspection td small { display:block;font-size:10px;max-width:260px;overflow-wrap:anywhere; }
+.inspection dd { overflow-wrap:anywhere; }.inspection .row-actions { margin-top:16px; }

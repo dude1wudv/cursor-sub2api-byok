@@ -24,7 +24,90 @@ pub struct ControlService {
     pub(super) store: Store,
     cursor_harness: CursorHarness,
     provider: Arc<dyn Provider>,
-    model_tests: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
+    model_tests: Arc<Mutex<ModelTestRegistry>>,
+}
+
+// A test ID is scoped to its model. Short-lived tombstones make a DELETE that
+// races ahead of POST effective, and prevent replay of a completed POST.
+#[derive(Default)]
+struct ModelTestRegistry {
+    entries: BTreeMap<(String, String), ModelTestEntry>,
+}
+struct ModelTestEntry {
+    token: CancellationToken,
+    started: bool,
+    expires: Option<Instant>,
+}
+impl ModelTestRegistry {
+    const RETAIN: std::time::Duration = std::time::Duration::from_secs(60);
+    fn key(model: &str, id: &str) -> Result<(String, String)> {
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(Error::Config(
+                "model test ID must contain 1–128 ASCII letters, digits, hyphens or underscores"
+                    .into(),
+            ));
+        }
+        Ok((model.to_owned(), id.to_owned()))
+    }
+    fn prune(&mut self) {
+        let now = Instant::now();
+        self.entries
+            .retain(|_, entry| entry.expires.is_none_or(|expiry| expiry > now));
+    }
+    fn reserve(&mut self, key: &(String, String)) -> Result<&mut ModelTestEntry> {
+        self.prune();
+        if !self.entries.contains_key(key) && self.entries.len() >= 1024 {
+            return Err(Error::Config(
+                "too many model tests; please retry later".into(),
+            ));
+        }
+        Ok(self
+            .entries
+            .entry(key.clone())
+            .or_insert_with(|| ModelTestEntry {
+                token: CancellationToken::new(),
+                started: false,
+                expires: Some(Instant::now() + Self::RETAIN),
+            }))
+    }
+    fn start(&mut self, key: &(String, String)) -> Result<CancellationToken> {
+        let entry = self.reserve(key)?;
+        if entry.started {
+            return Err(Error::ControllerConflict {
+                code: "model_test_already_started",
+                message: "model test ID already used; create a new test ID".into(),
+            });
+        }
+        if entry.token.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        entry.started = true;
+        entry.expires = None;
+        Ok(entry.token.clone())
+    }
+    fn cancel(&mut self, key: &(String, String)) -> Result<()> {
+        self.reserve(key)?.token.cancel();
+        Ok(())
+    }
+}
+struct ModelTestLease {
+    registry: Arc<Mutex<ModelTestRegistry>>,
+    key: (String, String),
+}
+impl Drop for ModelTestLease {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(entry) = registry.entries.get_mut(&self.key) {
+                entry.token.cancel();
+                entry.expires = Some(Instant::now() + ModelTestRegistry::RETAIN);
+            }
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct ModelConnectivityResult {
@@ -84,7 +167,7 @@ impl ControlService {
             )?,
             store,
             provider,
-            model_tests: Arc::new(Mutex::new(BTreeMap::new())),
+            model_tests: Arc::new(Mutex::new(ModelTestRegistry::default())),
         })
     }
     pub fn cursor_harness(&self) -> &CursorHarness {
@@ -154,34 +237,25 @@ impl ControlService {
         model_hash: &str,
         test_id: &str,
     ) -> Result<ModelConnectivityResult> {
-        let cancellation = CancellationToken::new();
-        let cancellation = {
-            let mut tests = self
-                .model_tests
-                .lock()
-                .expect("model test registry mutex poisoned");
-            tests
-                .entry(test_id.to_owned())
-                .or_insert_with(|| cancellation.clone())
-                .clone()
+        let key = ModelTestRegistry::key(model_hash, test_id)?;
+        let cancellation = self
+            .model_tests
+            .lock()
+            .expect("model test registry mutex poisoned")
+            .start(&key)?;
+        let _lease = ModelTestLease {
+            registry: self.model_tests.clone(),
+            key,
         };
-        let result = self.run_model_test(model_hash, cancellation).await;
+        self.run_model_test(model_hash, cancellation).await
+    }
+
+    pub fn cancel_model_test(&self, model_hash: &str, test_id: &str) -> Result<()> {
+        let key = ModelTestRegistry::key(model_hash, test_id)?;
         self.model_tests
             .lock()
             .expect("model test registry mutex poisoned")
-            .remove(test_id);
-        result
-    }
-
-    pub fn cancel_model_test(&self, test_id: &str) {
-        let cancellation = {
-            let mut tests = self
-                .model_tests
-                .lock()
-                .expect("model test registry mutex poisoned");
-            tests.entry(test_id.to_owned()).or_default().clone()
-        };
-        cancellation.cancel();
+            .cancel(&key)
     }
 
     async fn run_model_test(
@@ -199,7 +273,7 @@ impl ControlService {
             .await?
             .ok_or_else(|| Error::RunNotFound("model".into()))?;
         configured.configure(&mut model);
-        model.max_output_tokens = configured.max_output_tokens();
+        model.max_output_tokens = Some(configured.max_output_tokens().unwrap_or(256).min(256));
         let call_id = format!("model-test-{}", uuid::Uuid::new_v4());
         let invocation = ModelInvocation {
             call_id: call_id.clone(),
@@ -226,7 +300,10 @@ impl ControlService {
         let mut output_tokens = None;
         let mut output = String::new();
         let stream = self.provider.stream(invocation, cancellation.clone());
-        let completed = tokio::time::timeout(TEST_TIMEOUT, async {
+        let completed = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Ok(Err(Error::Cancelled)),
+            result = tokio::time::timeout(TEST_TIMEOUT, async {
             futures_util::pin_mut!(stream);
             let mut finished = false;
             while let Some(event) = stream.next().await {
@@ -258,9 +335,22 @@ impl ControlService {
                 ));
             }
             Ok(())
-        })
-        .await;
+            }) => result,
+        };
         match completed {
+            Ok(Err(Error::Cancelled)) => {
+                self.store
+                    .finish_llm_call(
+                        &call_id,
+                        "cancelled",
+                        None,
+                        started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+                        Some("cancelled"),
+                        Some("model connectivity test cancelled"),
+                    )
+                    .await?;
+                return Err(Error::Cancelled);
+            }
             Ok(result) => result?,
             Err(_) => {
                 cancellation.cancel();
@@ -490,5 +580,50 @@ fn estimate_output_tokens(output: &str) -> u64 {
         0
     } else {
         (output.chars().count() as u64).div_ceil(4)
+    }
+}
+
+#[cfg(test)]
+mod model_management_tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_is_scoped_and_precedes_dispatch() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let a = ModelTestRegistry::key("a", &id).unwrap();
+        let b = ModelTestRegistry::key("b", &id).unwrap();
+        let mut tests = ModelTestRegistry::default();
+        let running_a = tests.start(&a).unwrap();
+        tests.cancel(&b).unwrap();
+        assert!(!running_a.is_cancelled());
+        assert!(matches!(tests.start(&b), Err(Error::Cancelled)));
+        assert!(matches!(
+            tests.start(&a),
+            Err(Error::ControllerConflict { .. })
+        ));
+        tests.cancel(&a).unwrap();
+        assert!(running_a.is_cancelled());
+    }
+
+    #[test]
+    fn dropped_test_cancels_and_replay_is_rejected_until_tombstone_expires() {
+        let registry = Arc::new(Mutex::new(ModelTestRegistry::default()));
+        let key = ModelTestRegistry::key("a", &uuid::Uuid::new_v4().to_string()).unwrap();
+        let token = registry.lock().unwrap().start(&key).unwrap();
+        drop(ModelTestLease {
+            registry: registry.clone(),
+            key: key.clone(),
+        });
+        assert!(token.is_cancelled());
+        let mut registry = registry.lock().unwrap();
+        assert!(matches!(
+            registry.start(&key),
+            Err(Error::ControllerConflict { .. })
+        ));
+        registry.entries.get_mut(&key).unwrap().expires = Some(Instant::now());
+        registry.prune();
+        assert!(registry.entries.is_empty());
+        assert!(ModelTestRegistry::key("a", "").is_err());
+        assert!(ModelTestRegistry::key("a", &"x".repeat(129)).is_err());
     }
 }

@@ -359,7 +359,7 @@ fn as_i64(value: Option<u64>) -> Option<i64> {
     value.map(|value| value.min(i64::MAX as u64) as i64)
 }
 
-fn summary_from_row(row: sqlx::sqlite::SqliteRow) -> Result<LlmCallSummary> {
+pub(crate) fn summary_from_row(row: sqlx::sqlite::SqliteRow) -> Result<LlmCallSummary> {
     let usage = row.try_get::<Option<String>, _>("usage_json")?;
     Ok(LlmCallSummary {
         call_id: row.try_get("call_id")?,

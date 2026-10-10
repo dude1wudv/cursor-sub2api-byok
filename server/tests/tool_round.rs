@@ -51,6 +51,7 @@ fn exec_context() -> ExecContext {
         default_subagent_parameters: Vec::new(),
         subagent_models: std::collections::HashMap::new(),
         selected_subagent_models: std::collections::HashMap::new(),
+        byok_model_aliases: std::collections::HashMap::new(),
         terminals_folder: "/tmp/terminals".into(),
         admin_command_denylist: Vec::new(),
         allow_subagents: true,
@@ -781,7 +782,6 @@ async fn failed_task_retains_child_identity_for_cursor_view_and_wire_roundtrip()
                         result: Some(pb::subagent_result::Result::Error(pb::SubagentError {
                             agent_id: child_id.map(str::to_owned),
                             error: "synthetic failure".into(),
-                            ..Default::default()
                         })),
                     },
                 )),
@@ -881,6 +881,192 @@ fn task_overrides_are_scoped_by_type_and_preserve_model_parameters() {
         context.prepare_call(&task).unwrap().arguments["model_parameters"],
         json!([])
     );
+}
+
+#[tokio::test]
+async fn byok_task_aliases_route_by_hash_and_preserve_parent_parameters() {
+    use cursor_server::cursor::tools::runtime::SubagentModel;
+
+    let mut context = exec_context();
+    context.default_subagent_model = "byok-route-hash".into();
+    let parent_effort = pb::requested_model::ModelParameterValue {
+        id: "effort".into(),
+        value: "high".into(),
+    };
+    context.default_subagent_parameters = vec![parent_effort.clone()];
+    context
+        .byok_model_aliases
+        .insert("provider-model-id".into(), Some("byok-route-hash".into()));
+    context
+        .byok_model_aliases
+        .insert("Display Model Name".into(), Some("byok-route-hash".into()));
+
+    for alias in ["provider-model-id", "Display Model Name"] {
+        let mut task = call(&format!("task-{alias}"), "Task");
+        task.arguments = json!({"prompt":"inspect","model":alias});
+        let prepared = context.prepare_call(&task).unwrap();
+        let request = codec::request(1, &prepared, &context).unwrap();
+        let Some(pb::agent_server_message::Message::ExecServerMessage(exec)) = request.message
+        else {
+            panic!("expected Task ExecServerMessage")
+        };
+        let Some(pb::exec_server_message::Message::SubagentArgs(args)) = exec.message else {
+            panic!("expected SubagentArgs")
+        };
+        assert_eq!(args.model_id, "byok-route-hash");
+        assert_eq!(args.model_parameters, vec![parent_effort.clone()]);
+    }
+
+    // A type-level native selection and its matching explicit model ID must
+    // stay native even if that exact name collides with a BYOK alias.
+    context
+        .byok_model_aliases
+        .insert("official-model-id".into(), Some("byok-route-hash".into()));
+    let official_effort = pb::requested_model::ModelParameterValue {
+        id: "effort".into(),
+        value: "low".into(),
+    };
+    context.subagent_models.insert(
+        "explore".into(),
+        SubagentModel::Model(pb::RequestedModel {
+            model_id: "official-model-id".into(),
+            parameters: vec![official_effort.clone()],
+            ..Default::default()
+        }),
+    );
+    for explicit in [false, true] {
+        let mut task = call("task-native-model", "Task");
+        task.arguments = if explicit {
+            json!({"prompt":"inspect","subagent_type":"explore","model":"official-model-id"})
+        } else {
+            json!({"prompt":"inspect","subagent_type":"explore"})
+        };
+        let prepared = context.prepare_call(&task).unwrap();
+        let request = codec::request(1, &prepared, &context).unwrap();
+        let Some(pb::agent_server_message::Message::ExecServerMessage(exec)) = request.message
+        else {
+            panic!("expected native Task ExecServerMessage")
+        };
+        let Some(pb::exec_server_message::Message::SubagentArgs(args)) = exec.message else {
+            panic!("expected native SubagentArgs")
+        };
+        assert_eq!(args.model_id, "official-model-id");
+        assert_eq!(args.model_parameters, vec![official_effort.clone()]);
+    }
+
+    // A custom name resolves to the BYOK hash and inherits that target's
+    // parameters, rather than the unrelated parent model's parameters.
+    let target_parameters = vec![
+        pb::requested_model::ModelParameterValue {
+            id: "effort".into(),
+            value: "medium".into(),
+        },
+        pb::requested_model::ModelParameterValue {
+            id: "context_window".into(),
+            value: "32768".into(),
+        },
+    ];
+    context.selected_subagent_models.insert(
+        "byok-child-hash".into(),
+        pb::RequestedModel {
+            model_id: "byok-child-hash".into(),
+            parameters: target_parameters.clone(),
+            ..Default::default()
+        },
+    );
+    context
+        .byok_model_aliases
+        .insert("Custom Agent Model".into(), Some("byok-child-hash".into()));
+    let mut custom = call("task-custom-name", "Task");
+    custom.arguments = json!({"prompt":"inspect","model":"Custom Agent Model"});
+    let prepared = context.prepare_call(&custom).unwrap();
+    let request = codec::request(1, &prepared, &context).unwrap();
+    let Some(pb::agent_server_message::Message::ExecServerMessage(exec)) = request.message else {
+        panic!("expected custom-name Task ExecServerMessage")
+    };
+    let Some(pb::exec_server_message::Message::SubagentArgs(args)) = exec.message else {
+        panic!("expected custom-name SubagentArgs")
+    };
+    assert_eq!(args.model_id, "byok-child-hash");
+    assert_eq!(args.model_parameters, target_parameters);
+
+    // A model name that maps to multiple routing hashes must complete as an error,
+    // with no child dispatch request sent to Cursor.
+    context
+        .byok_model_aliases
+        .insert("shared-name".into(), None);
+    let mut ambiguous = call("task-ambiguous", "Task");
+    ambiguous.arguments = json!({"prompt":"inspect","model":"shared-name"});
+    let dispatcher = ToolDispatcher::new(CursorToolRuntime::default());
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[ambiguous],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(dispatched[0].messages.is_empty());
+    let completion = dispatched[0]
+        .completion
+        .as_ref()
+        .expect("ambiguous alias must complete as a validation error");
+    assert!(completion.result().is_error);
+    assert!(completion
+        .result()
+        .content
+        .contains("Task model name is ambiguous"));
+
+    // A type-level Disabled override wins even if its requested name has a BYOK alias.
+    context
+        .subagent_models
+        .insert("explore".into(), SubagentModel::Disabled);
+    context
+        .byok_model_aliases
+        .insert("disabled-alias".into(), Some("byok-route-hash".into()));
+    let mut disabled = call("task-disabled", "Task");
+    disabled.arguments = json!({
+        "prompt":"inspect",
+        "subagent_type":"explore",
+        "model":"disabled-alias"
+    });
+    assert!(context.task_disabled(&disabled));
+    let disabled_model = context.prepare_call(&disabled).unwrap().arguments["model"].clone();
+    let dispatched = dispatcher
+        .start_batch(
+            &[disabled],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled_model, "disabled-alias");
+    assert!(dispatched[0].messages.iter().all(|message| !matches!(
+        message.message.as_ref(),
+        Some(pb::agent_server_message::Message::ExecServerMessage(_))
+    )));
+    let completion = dispatched[0]
+        .completion
+        .as_ref()
+        .expect("disabled subagent must not dispatch");
+    assert!(completion.result().is_error);
+    assert!(completion.result().content.contains("user has disabled"));
 }
 
 #[tokio::test]

@@ -11,7 +11,11 @@ use crate::{
 use super::{now_ms, Store};
 
 const MODEL_COLUMNS: &str = r#"
-    model_hash, sort_order, display_name, group_name, model_type, base_url, use_full_url, api_key, tooltip_data,
+    model_hash, sort_order, display_name, group_name, model_type, base_url, use_full_url,
+    CASE WHEN api_key = 'sub2api-connection:v1' THEN
+        (SELECT json_extract(value_json, '$.api_key_protected') FROM service_settings WHERE setting_key = 'sub2api_connection')
+        ELSE api_key END AS resolved_api_key,
+    tooltip_data,
     model_id, reasoning_effort, allowed_reasoning_efforts_json, openai_endpoint, openai_extra_params_enabled,
     openai_extra_params_json, custom_headers_enabled, custom_headers_json,
     anthropic_extra_params_enabled, anthropic_extra_params_json, context_window_tokens,
@@ -89,6 +93,7 @@ impl Store {
         let now = now_ms();
         let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
+        let stored_key = super::sub2api::stored_model_key(&mut transaction, &input).await?;
         if next_hash != current.model_hash {
             sqlx::query("UPDATE llm_calls SET model_hash = NULL WHERE model_hash = ?")
                 .bind(&current.model_hash)
@@ -113,7 +118,7 @@ impl Store {
         .bind(input.model_type.as_str())
         .bind(&input.base_url)
         .bind(input.use_full_url)
-        .bind(crate::local_app::secrets::protect_string(&input.api_key)?)
+        .bind(stored_key)
         .bind(&input.tooltip_data)
         .bind(&input.model_id)
         .bind(&input.reasoning_effort)
@@ -229,6 +234,7 @@ async fn insert_model_with_conflict(
     if ignore_existing {
         statement.push_str(" ON CONFLICT(model_hash) DO NOTHING");
     }
+    let stored_key = super::sub2api::stored_model_key(transaction, input).await?;
     let result = sqlx::query(&statement)
         .bind(hash)
         .bind(input.sort_order)
@@ -237,7 +243,7 @@ async fn insert_model_with_conflict(
         .bind(input.model_type.as_str())
         .bind(&input.base_url)
         .bind(input.use_full_url)
-        .bind(crate::local_app::secrets::protect_string(&input.api_key)?)
+        .bind(stored_key)
         .bind(&input.tooltip_data)
         .bind(&input.model_id)
         .bind(&input.reasoning_effort)
@@ -262,6 +268,16 @@ async fn insert_model_with_conflict(
 }
 
 fn model_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ModelConfig> {
+    let protected = row
+        .try_get::<Option<String>, _>("resolved_api_key")?
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            Error::Config("model shared connection is missing its protected API key".into())
+        })?;
+    let api_key = crate::local_app::secrets::unprotect_string(&protected)?;
+    if api_key.trim().is_empty() {
+        return Err(Error::Config("model API key is empty".into()));
+    }
     Ok(ModelConfig {
         model_hash: row.try_get("model_hash")?,
         sort_order: row.try_get("sort_order")?,
@@ -270,13 +286,13 @@ fn model_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ModelConfig> {
         model_type: ModelType::from_str(row.try_get("model_type")?)?,
         base_url: row.try_get("base_url")?,
         use_full_url: row.try_get("use_full_url")?,
-        api_key: crate::local_app::secrets::unprotect_string(
-            row.try_get::<String, _>("api_key")?.as_str(),
-        )?,
+        api_key,
         tooltip_data: row.try_get("tooltip_data")?,
         model_id: row.try_get("model_id")?,
         reasoning_effort: row.try_get("reasoning_effort")?,
-        allowed_reasoning_efforts: serde_json::from_str(&row.try_get::<String, _>("allowed_reasoning_efforts_json")?)?,
+        allowed_reasoning_efforts: serde_json::from_str(
+            &row.try_get::<String, _>("allowed_reasoning_efforts_json")?,
+        )?,
         openai_endpoint: row.try_get("openai_endpoint")?,
         openai_extra_params_enabled: row.try_get("openai_extra_params_enabled")?,
         openai_extra_params: serde_json::from_str(

@@ -1,0 +1,14 @@
+.model-management {
+  .model-management-filters { display: flex; gap: 12px; margin-bottom: 12px; input { flex: 1; min-width: 120px; } select { width: 180px; } }
+  .model-batch-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid #dce5f7; border-radius: 14px; background: #ffffff80; font-size: 12px; }
+  .model-select { display: flex; align-items: center; gap: 7px; margin: 0; }
+  input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #6a67da; }
+  .model-group { margin-top: 22px; }
+  .model-group-title { display: flex; align-items: center; gap: 10px; color: #555d86; font-size: 13px; margin: 0 0 12px; span { color: #8990ae; font-weight: 400; } }
+  .card-actions { flex-wrap: wrap; gap: 8px; }
+  .test-result { min-height: 34px; height: auto; flex-wrap: wrap; overflow-wrap: anywhere; }
+  .test-failed { color: #b74c65; }
+  .test-cancelling, .test-running, .test-queued { color: #6460be; }
+  .model-order { display: flex; justify-content: flex-end; align-items: center; gap: 6px; padding-top: 10px; color: #858ba4; font-size: 11px; button { padding: 3px 10px; min-height: 26px; } }
+  @media (max-width: 640px) { .model-management-filters { flex-wrap: wrap; select { width: 100%; } } }
+}

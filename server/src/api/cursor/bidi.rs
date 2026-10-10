@@ -184,9 +184,20 @@ pub async fn append(
     request: DecodedAppend,
     parent: Option<TransportParent>,
 ) -> Result<ai::BidiAppendResponse> {
-    let replace_closing = request.model_id().is_some();
+    // Reject invalid initial metadata before publishing an idle transport. An
+    // idle actor has no Append to fail and would otherwise stream heartbeats forever.
+    if request.conversation_id() == Some("") {
+        return Err(Error::Protocol("Cursor conversation id is required".into()));
+    }
+    if parent.as_ref().is_some_and(|parent| {
+        parent.request_id.as_deref() == Some("") || parent.tool_call_id.as_deref() == Some("")
+    }) {
+        return Err(Error::Protocol(
+            "Cursor parent ids must not be empty".into(),
+        ));
+    }
     let handle = registry
-        .get_or_create_for_append(&request.request_id, replace_closing)
+        .get_or_create_for_append(&request.request_id)
         .await?;
     let _admission = handle.admit()?;
     if let Some(conversation_id) = request.conversation_id() {

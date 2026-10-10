@@ -1,5 +1,53 @@
 # 验证范围
 
+## v0.3.0-rc.1 — 2026-10-10（预发布）
+
+### 代码与构建
+
+- `cargo test --workspace --all-targets`：330 passed，0 failed，0 ignored；包括服务端、桌面和 Semble 工作区目标。包含本轮消息 ID、别名路由及原生参数回归。
+- `cargo clippy --workspace --all-targets -- -D warnings`：通过。补装当前工具链 clippy 后修复新代码及现有测试中的 lint，不关闭规则。
+- 前端两个 TypeScript 检查和 Vite 构建通过；Windows Tauri `--no-bundle` release 构建通过。MSVC 链接器输出与 Cargo PDB 文件名提示不影响成功退出，EXE 未做 Authenticode 签名。
+- 合成浏览器交互通过：调用筛选/分页/父子诊断，模型复制/分组排序/批量取消，多模型用量/日历/价格，代理/端口，以及订阅默认关闭、明确同意和错误展示。
+
+### 子代理根因及直接回归
+
+Cursor 3.23.12 可独立发送 `x-parent-request-id` 与 `x-parent-agent-tool-call-id`。旧版本要求二者同时存在，真实日志四次出现本地 `protocol error: Cursor subagent request must include both parent headers`（UTC 02:16:09、21、36、54），约十秒后相同子请求的 RunSSE 返回 RunNotFound 404。故此前模型所述 404 不能作为缺少 REST 接口的证据。
+
+修复覆盖本地 `POST /aiserver.v1.BidiService/BidiAppend` 的部分关联信息接收、冲突检测、迟到信息合并，以及 `POST /agent.v1.AgentService/RunSSE` 对已知拒绝原因的及时结束。新增元数据诊断包含请求/父请求/Task ID、路径、来源、阶段、状态、耗时，不采集完整内容。回归还覆盖初始空字段不能创建悬挂 actor、完成及取消后的同 attempt ID 重放不能再次执行、checkpoint 使用迟到 Task ID、活跃流较高 sequence 的新 action 仍可执行。已执行的 transport ID 通过 runs 持久化记录拒绝重放；Cursor 重试/续接使用新的 attempt/generation，保留原 conversation。
+
+### 隔离恢复
+
+- 订阅缓存 10 项合成 SQLite 集成测试、1 项 Prepared/Restoring 崩溃幂等测试通过；另有 Harness 生命周期及 Cursor 运行保护测试。
+- 实际新 EXE + 临时 profile + 合成 SQLite 验证通过：明确同意才写两字段，DPAPI journal，派生 JSON 叶恢复保留其他字段与 null，第三方订阅修改保留，强制结束测试专属进程后 `--restore` 幂等，启动自动恢复。原 settings 与合成 accessToken 不变，无真实账号操作或模型用量。
+- 本轮未重跑 Windows 首次 CA 安装/卸载全流程；沿用既有授权证书的接管成功。旧版本完整 CA 验收仅作为历史证据。
+
+### 真实 Cursor 验收
+
+已用完授权范围：GLM z-ai/glm-5.3-flash，6次人工父请求、8次 Task 派遣，仅临时合成工作区，包含首轮失败的2次派遣。后台结果自动唤起父对话及 HTTP 自动重试单独计数，不冒充新增人工请求或 Task。GPT/Claude/MCP、活跃流断线重连和官方子模型权限的真实闭环未验证。
+
+首轮实际使用1次父请求、2次 Task 派遣，均失败，父模型未代读文件。第一子请求把 provider model 名称直接发送到 Cursor 官方路由，BidiAppend/RunSSE HTTP 200 内返回 Model name is not valid；第二次使用正确 BYOK hash 后，4次自动传输尝试在本地 prepare 阶段报 UserMessage 缺少 message_id。这两项均不等同于 HTTP 404。Cursor 3.23.12 agent-host 的 createConversationAction 原生省略该字段，其 runId 跨传输重试保持不变。
+
+针对实证增加唯一 BYOK 名称到路由 ID 的解析（歧义拒绝，保留明确原生选项）、基于子 conversationId/runId 的稳定 input ID，以及省略 message_id 的实际 HTTP 初始化直到完成回归。下列真实结果来自重建后的 EXE，不能用隔离通过代替尚未通过的项目。
+
+后续审查修正别名边界：原生类型默认及显式使用同一官方 ID 均保留原路由；自定义文件名称与工具模型名称才参与别名解析；解析为非父 BYOK 模型时查回该模型原生 parameters，保留 effort/context 等字段。禁用类型仍优先拒绝。
+
+重建后的真实 GLM 验收：新建 explore 成功，只读 alpha.txt 返回 blue/purple/cyan，子对话显示读取和完整结果，父卡 Completed 且回传正确。随后 Task resume 沿用同一子 conversation，读取 beta.txt 并保留颜色历史；两次子 run 均 completed。两个后台子代理在相隔50ms内启动，父先返回，之后两次后台完成自动唤起父对话并汇总正确，无重复派遣。这些是实际 Cursor 3.23.12 + Sub2API 的运行证据。
+
+单独取消仍未通过：2026-10-09 19:28:54（UTC−8）点击原生子卡片 Stop 后短暂显示 Stopped，但子任务继续完成。Cursor `renderer.log` 同时明确记录 `[AgentHostService] dropping conversation action with no host delivery path`，`actionCase=cancelSubagentAction`。该动作在客户端被丢弃，不能推断为服务端已收到取消；后端日志及 DB 显示 child completed，与界面最终结果一致。本次有两次 Sub2API 502 自动请求重试，没有新增 Task 派遣。
+
+最后一次采用合成自定义类型 `acceptance-reader`，文件默认 `model: z-ai/glm-5.3-flash`，Task 未显式指定模型。子请求 `a012431f-ee5b-4b13-9b07-f065c0324eeb` 实际进入 BYOK hash `76ff545d80da710a`，BidiAppend/RunSSE 均为 local_byok HTTP 200；原生子对话可打开，展示 README 读取、10条说明和 GLM 模型名。此轮从原生输入区后台列表点击 Stop（2026-10-10 03:36:05 UTC），子调用仍持续至 03:36:32.793 UTC，随后触发父结果回传；该入口取消也未通过，其具体丢失环节尚未确证。模型文字所称“停止前已完成”与时间证据不符，不采信为成功取消。
+
+最终元数据核对：重建后的14个 run 全部 completed（含后台自动回传），running run/call 均为0，无本轮遗留等待。此结果证明任务最终收尾，不证明取消有效。原生单独取消目前是明确未解决项，本轮不能宣称子代理全部闭环完成。
+
+构建 EXE SHA-256：`a7c16ed7034412fd0c4a744ccaf353d1e2a0fb3138d4cc3b91c19175890d174d`。本地元数据证据保存在忽略目录 `tmp/validation-0.3.0/glm-real-metadata.json`，仅含请求关联、模型、路由、状态与时间；没有导出完整对话、Key 或账号 token。
+
+### Cursor 最新版与本机安装
+
+发布前重新核对：本机已升级为 Cursor 3.24.12，官方[下载页](https://cursor.com/download)将 3.24 列为 Latest。对当前安装代码的只读审查确认：初始子消息仍省略 messageId，SubagentArgs 的 model_parameters 仍是 field 21；已有兼容逻辑覆盖这两项协议。3.24.12 的 AgentHostService 仍未转发 cancelSubagentAction（workbench.desktop.main.js 字符位置19455360附近），因此没有将上一版本取消失败宣称为新版已修复。未修改 Cursor 安装文件；3.24.12 的真实模型行为尚未复验。
+
+用户已接受带上述限制公开发布预发布版。确认 Cursor/控制器均退出且恢复 journal 已清理后，本机 EXE 更新至本构建，SHA-256 与发布包相同；保留原快捷方式目标、用户数据及旧 EXE 备份。没有启用真实订阅缓存注入。
+
+
 ## v0.2.4 — 2026-10-09
 
 - 服务端 245 项测试最终通过。先运行 `cargo test -p cursor-server --lib --tests`，因本次 Task 模型说明调整而更新对应的工具目录快照；随后复跑 `prefix_stability` 及其后的全部集成测试，断言未跳过或弱化。

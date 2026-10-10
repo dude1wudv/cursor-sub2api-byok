@@ -10,6 +10,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 const KEY: &str = "sub2api_connection";
+pub(super) const SHARED_KEY_REFERENCE: &str = "sub2api-connection:v1";
 #[derive(Clone, Debug, Serialize)]
 pub struct Sub2ApiConnection {
     pub base_url: String,
@@ -26,6 +27,32 @@ struct SavedConnection {
     base_url: String,
     api_key_protected: String,
 }
+
+// Model rows reference the one encrypted connection. Reject stale inputs rather
+// than accidentally persisting another encrypted copy after a connection change.
+pub(super) async fn stored_model_key(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    input: &ModelConfigInput,
+) -> Result<String> {
+    let saved: Option<String> =
+        sqlx::query_scalar("SELECT value_json FROM service_settings WHERE setting_key = ?")
+            .bind(KEY)
+            .fetch_optional(&mut **transaction)
+            .await?;
+    let Some(saved) = saved else {
+        return secrets::protect_string(&input.api_key);
+    };
+    let saved: SavedConnection = serde_json::from_str(&saved)
+        .map_err(|_| Error::Config("saved Sub2API connection is invalid".into()))?;
+    if input.base_url != saved.base_url
+        || input.api_key != secrets::unprotect_string(&saved.api_key_protected)?
+    {
+        return Err(Error::Config(
+            "model input does not match the shared Sub2API connection; refresh and retry".into(),
+        ));
+    }
+    Ok(SHARED_KEY_REFERENCE.into())
+}
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sub2ApiModelInput {
@@ -35,6 +62,8 @@ pub struct Sub2ApiModelInput {
     pub model_type: ModelType,
     #[serde(default)]
     pub sort_order: i64,
+    #[serde(default)]
+    pub group_name: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     #[serde(default = "crate::model::default_reasoning_efforts")]
@@ -56,6 +85,7 @@ impl Sub2ApiModelInput {
             model_id: m.model_id.clone(),
             model_type: m.model_type,
             sort_order: m.sort_order,
+            group_name: m.group_name.clone(),
             reasoning_effort: if m.model_type == ModelType::Anthropic {
                 m.anthropic_thinking_effort.clone()
             } else {
@@ -86,7 +116,7 @@ impl Sub2ApiModelInput {
             model_id: self.model_id.clone(),
             model_type: self.model_type,
             sort_order: self.sort_order,
-            group_name: Some("Sub2API".into()),
+            group_name: self.group_name.clone(),
             base_url: base_url.into(),
             api_key: api_key.into(),
             use_full_url: false,
@@ -164,8 +194,14 @@ impl Store {
         })
     }
     pub(crate) async fn sub2api_credentials(&self) -> Result<(String, String)> {
-        let saved = self.saved_connection().await?.ok_or_else(|| Error::Config("请先保存 Sub2API 连接".into()))?;
-        Ok((saved.base_url, secrets::unprotect_string(&saved.api_key_protected)?))
+        let saved = self
+            .saved_connection()
+            .await?
+            .ok_or_else(|| Error::Config("请先保存 Sub2API 连接".into()))?;
+        Ok((
+            saved.base_url,
+            secrets::unprotect_string(&saved.api_key_protected)?,
+        ))
     }
     pub async fn sub2api_model_input(&self, input: &Sub2ApiModelInput) -> Result<ModelConfigInput> {
         let saved = self
@@ -204,6 +240,10 @@ impl Store {
         };
         let models = self.models().await?;
         let mut tx = self.pool.begin().await?;
+        // Read callers still see the old snapshot until this transaction commits.
+        // New model rows must resolve the new connection within this transaction.
+        sqlx::query("INSERT INTO service_settings(setting_key,value_json,updated_at_ms) VALUES (?,?,?) ON CONFLICT(setting_key) DO UPDATE SET value_json=excluded.value_json,updated_at_ms=excluded.updated_at_ms")
+            .bind(KEY).bind(serde_json::to_string(&saved)?).bind(now_ms()).execute(&mut *tx).await?;
         for old in models {
             let next = Sub2ApiModelInput::from_model(&old).configured(&base_url, &key)?;
             let hash = model_hash(&next)?;
@@ -218,10 +258,18 @@ impl Store {
                     .bind(&old.model_hash)
                     .execute(&mut *tx)
                     .await?;
+            } else {
+                // Also remove historical per-model ciphertext on a no-op save.
+                sqlx::query(
+                    "UPDATE model_configs SET api_key = ?, updated_at_ms = ? WHERE model_hash = ?",
+                )
+                .bind(SHARED_KEY_REFERENCE)
+                .bind(now_ms())
+                .bind(&old.model_hash)
+                .execute(&mut *tx)
+                .await?;
             }
         }
-        sqlx::query("INSERT INTO service_settings(setting_key,value_json,updated_at_ms) VALUES (?,?,?) ON CONFLICT(setting_key) DO UPDATE SET value_json=excluded.value_json,updated_at_ms=excluded.updated_at_ms")
-            .bind(KEY).bind(serde_json::to_string(&saved)?).bind(now_ms()).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(Sub2ApiConnection {
             base_url,

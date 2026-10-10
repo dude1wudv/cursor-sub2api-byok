@@ -25,6 +25,9 @@ struct ClientCache {
 }
 
 impl NetworkClients {
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
+    }
     pub fn new(store: Store) -> Self {
         Self {
             store,
@@ -99,6 +102,9 @@ pub async fn client_builder(store: &Store) -> Result<reqwest::ClientBuilder> {
     // Use the platform TLS stack for compatibility with provider gateways that
     // only offer legacy TLS 1.2 cipher suites unsupported by rustls.
     let mut builder = reqwest::Client::builder().use_native_tls();
+    if settings.mode == crate::store::ProxyMode::Direct {
+        builder = builder.no_proxy();
+    }
     if settings.mode.is_custom() {
         builder = builder.proxy(custom_proxy(&settings)?);
     }
@@ -112,6 +118,9 @@ pub async fn client(store: &Store) -> Result<reqwest::Client> {
 pub async fn blocking_client_builder(store: &Store) -> Result<reqwest::blocking::ClientBuilder> {
     let settings = store.proxy_settings_secret().await?;
     let mut builder = reqwest::blocking::Client::builder().use_native_tls();
+    if settings.mode == crate::store::ProxyMode::Direct {
+        builder = builder.no_proxy();
+    }
     if settings.mode.is_custom() {
         builder = builder.proxy(custom_proxy(&settings)?);
     }
@@ -147,7 +156,9 @@ fn url_host_is_loopback(url: &url::Url) -> bool {
             host.trim_end_matches('.').eq_ignore_ascii_case("localhost")
         }
         Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => {
+            address.is_loopback() || address.to_ipv4_mapped().is_some_and(|v| v.is_loopback())
+        }
         None => false,
     }
 }
@@ -176,6 +187,7 @@ mod tests {
             "http://localhost.:15721",
             "http://127.0.0.2:15721",
             "http://[::1]:15721",
+            "http://[::ffff:127.0.0.1]:15721",
         ] {
             assert!(reject_self_proxy(address, 15721).is_err(), "{address}");
         }

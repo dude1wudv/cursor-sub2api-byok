@@ -40,6 +40,7 @@ impl Default for TokenPricingSettings {
 pub enum ProxyMode {
     #[default]
     Default,
+    Direct,
     Custom,
 }
 
@@ -49,7 +50,8 @@ impl ProxyMode {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProxySettingsInput {
     pub mode: ProxyMode,
     pub address: String,
@@ -67,7 +69,7 @@ pub struct ProxySettings {
     pub has_password: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub(crate) struct ProxySettingsSecret {
     pub mode: ProxyMode,
     pub address: String,
@@ -107,7 +109,7 @@ impl Store {
         Ok(())
     }
 
-    pub(crate) async fn proxy_settings_secret(&self) -> Result<ProxySettingsSecret> {
+    async fn proxy_settings_stored(&self) -> Result<ProxySettingsSecret> {
         let value = sqlx::query_scalar::<_, String>(
             "SELECT value_json FROM service_settings WHERE setting_key = ?",
         )
@@ -118,9 +120,27 @@ impl Store {
             .as_deref()
             .map_or_else(ProxySettingsSecret::default, read_proxy_settings))
     }
+    pub(crate) async fn proxy_settings_secret(&self) -> Result<ProxySettingsSecret> {
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT value_json FROM service_settings WHERE setting_key = ?")
+                .bind(PROXY_SETTINGS_KEY)
+                .fetch_optional(&self.pool)
+                .await?;
+        let mut settings: ProxySettingsSecret = value
+            .map(|v| serde_json::from_str(&v))
+            .transpose()
+            .map_err(|_| {
+                crate::Error::Config("出站代理配置损坏；请在网络设置中重新保存，未尝试直连".into())
+            })?
+            .unwrap_or_default();
+        if settings.mode.is_custom() && settings.auth_enabled && !settings.password.is_empty() {
+            settings.password = crate::local_app::secrets::unprotect_string(&settings.password)?;
+        }
+        Ok(settings)
+    }
 
     pub async fn proxy_settings(&self) -> Result<ProxySettings> {
-        let settings = self.proxy_settings_secret().await?;
+        let settings = self.proxy_settings_stored().await?;
         Ok(ProxySettings {
             mode: settings.mode,
             address: settings.address,
@@ -131,8 +151,12 @@ impl Store {
     }
 
     pub async fn set_proxy_settings(&self, input: ProxySettingsInput) -> Result<ProxySettings> {
-        let existing = self.proxy_settings_secret().await?;
-        let address = input.address.trim().to_owned();
+        let existing = self.proxy_settings_stored().await?;
+        let address = if input.mode.is_custom() {
+            input.address.trim().to_owned()
+        } else {
+            String::new()
+        };
         if input.mode.is_custom() {
             let parsed = url::Url::parse(&address)
                 .map_err(|error| crate::Error::Config(format!("invalid proxy address: {error}")))?;
@@ -141,21 +165,37 @@ impl Store {
                     "proxy address must use http, https, socks5, or socks5h".into(),
                 ));
             }
+            if parsed.host_str().is_none()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+                || parsed.path() != "/" && !parsed.path().is_empty()
+            {
+                return Err(crate::Error::Config(
+                    "代理地址只能包含协议、主机和端口；凭据请填写独立字段".into(),
+                ));
+            }
             reqwest::Proxy::all(&address)?;
         }
-        let password = if input.auth_enabled {
-            input
-                .password
-                .filter(|password| !password.is_empty())
-                .unwrap_or(existing.password)
+        let auth_enabled = input.mode.is_custom() && input.auth_enabled;
+        let password = if auth_enabled {
+            match input.password.filter(|p| !p.is_empty()) {
+                Some(password) => crate::local_app::secrets::protect_string(&password)?,
+                None => existing.password,
+            }
         } else {
             String::new()
         };
         let settings = ProxySettingsSecret {
             mode: input.mode,
             address,
-            auth_enabled: input.auth_enabled,
-            username: input.username.trim().to_owned(),
+            auth_enabled,
+            username: if auth_enabled {
+                input.username.trim().to_owned()
+            } else {
+                String::new()
+            },
             password,
         };
         let value_json = serde_json::to_string(&settings)?;

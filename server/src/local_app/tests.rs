@@ -20,6 +20,8 @@ async fn cursor_running_blocks_enable_disable_and_exit_without_mutation() {
         h.set_enabled(true).await.map(|_| ()),
         h.set_enabled(false).await.map(|_| ()),
         h.disable().await,
+        h.set_subscription(true, true).await.map(|_| ()),
+        h.set_subscription(false, false).await.map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -35,6 +37,60 @@ async fn cursor_running_blocks_enable_disable_and_exit_without_mutation() {
     h.inner.store.pool().close().await;
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn subscription_exit_and_restart_restore_without_takeover_journal() {
+    use sqlx::{Connection, Row};
+    for restart in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let h = harness(dir.path()).await;
+        let database = subscription_database(&h.inner.settings_path).unwrap();
+        fs::create_dir_all(database.parent().unwrap()).unwrap();
+        let mut db = sqlx::SqliteConnection::connect_with(
+            &sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&database)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        sqlx::query("CREATE TABLE ItemTable(key TEXT PRIMARY KEY, value TEXT)")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO ItemTable VALUES ('cursorAuth/stripeMembershipType','free')")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        assert!(h.set_subscription(true, false).await.is_err());
+        h.set_subscription(true, true).await.unwrap();
+        assert!(h.status().await.unwrap().subscription_injected);
+        assert!(!h.inner.journal_path.exists());
+        *h.inner.cursor_running_override.write() = Some(true);
+        assert!(h.disable().await.is_err());
+        assert!(account::pending(&h.inner.subscription_journal).unwrap());
+        *h.inner.cursor_running_override.write() = Some(false);
+        if restart {
+            *h.inner.subscription_active.write() = false;
+            assert!(matches!(
+                h.status().await.unwrap().integration,
+                IntegrationState::RecoveryRequired
+            ));
+            h.recover_pending().await.unwrap();
+        } else {
+            h.disable().await.unwrap();
+        }
+        let row =
+            sqlx::query("SELECT value FROM ItemTable WHERE key='cursorAuth/stripeMembershipType'")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(row.get::<String, _>(0), "free");
+        assert!(!h.status().await.unwrap().subscription_recovery_pending);
+        h.disable().await.unwrap();
+        h.inner.store.pool().close().await;
+    }
+}
+
 #[tokio::test]
 async fn active_is_idempotent_and_failed_restore_keeps_proxy_and_journal() {
     let dir = tempfile::tempdir().unwrap();
@@ -47,8 +103,13 @@ async fn active_is_idempotent_and_failed_restore_keeps_proxy_and_journal() {
     record.stage = journal::Stage::Active;
     journal::write(&h.inner.journal_path, &record).unwrap();
     *h.inner.proxy.lock().await = ProxyRuntime::fixture();
-    assert!(matches!(h.status().await.unwrap().integration, IntegrationState::Degraded),
-        "a running proxy with matching settings cannot be healthy without a trusted CA");
+    assert!(
+        matches!(
+            h.status().await.unwrap().integration,
+            IntegrationState::Degraded
+        ),
+        "a running proxy with matching settings cannot be healthy without a trusted CA"
+    );
     let journal_before = fs::read(&h.inner.journal_path).unwrap();
     h.set_enabled(true).await.unwrap();
     h.set_enabled(true).await.unwrap();
@@ -119,11 +180,16 @@ async fn persistent_trust_is_retained_across_disable_and_recovery() {
         patch.set_proxy_url("http://127.0.0.1:12345").unwrap();
         patch.apply().unwrap();
         // An invalid DER proves restoration does not even call the native removal API.
-        let mut record = journal::from_patch(&patch, b"synthetic-not-a-certificate".to_vec(), false).unwrap();
+        let mut record =
+            journal::from_patch(&patch, b"synthetic-not-a-certificate".to_vec(), false).unwrap();
         record.ca_persistent_trust = true;
         record.stage = journal::Stage::Active;
         journal::write(&h.inner.journal_path, &record).unwrap();
-        if recovery { h.recover_pending().await.unwrap(); } else { h.disable().await.unwrap(); }
+        if recovery {
+            h.recover_pending().await.unwrap();
+        } else {
+            h.disable().await.unwrap();
+        }
         assert!(!h.inner.settings_path.exists());
         assert!(!h.inner.journal_path.exists());
         assert!(h.accept_certificate(false, 1).await.is_err());

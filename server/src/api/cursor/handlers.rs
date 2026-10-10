@@ -176,9 +176,35 @@ async fn run_sse_handler(
     Extension(proxy): Extension<CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
+    let mut diagnostic = diagnostic("/agent.v1.AgentService/RunSSE");
+    let started = std::time::Instant::now();
+    let result = run_sse_inner(&registry, proxy, request, &mut diagnostic).await;
+    finish_diagnostic(
+        &registry,
+        diagnostic,
+        started,
+        result
+            .as_ref()
+            .map(|r| r.status())
+            .unwrap_or_else(|e| e.status_code())
+            .as_u16(),
+    )
+    .await;
+    result
+}
+
+async fn run_sse_inner(
+    registry: &TransportRegistry,
+    proxy: CursorProxy,
+    request: Request<Body>,
+    diagnostic: &mut crate::store::RouteDiagnostic,
+) -> Result<Response<Body>> {
     let (parts, body) = buffered(request).await?;
     let request: agent::BidiRequestId = connect::decode_unary(&body)?;
+    diagnostic.request_id = Some(request.request_id.clone());
+    diagnostic.stage = "route_lookup".into();
     let route = registry.wait_route(&request.request_id).await?;
+    diagnostic.stage = "stream_connect".into();
     let trace = registry.trace(&request.request_id);
     trace.resume();
     trace.request(
@@ -188,16 +214,17 @@ async fn run_sse_handler(
     );
     match route {
         crate::cursor::transport::TransportRoute::Local => {
-            run_sse::stream(&registry, &request.request_id).await
+            run_sse::stream(registry, &request.request_id).await
         }
         crate::cursor::transport::TransportRoute::Upstream(generation) => {
+            diagnostic.route = "cursor_official".into();
             let response = proxy::forward(
                 Extension(proxy),
                 Request::from_parts(parts, Body::from(body)),
             )
             .await?;
             Ok(run_sse::upstream(
-                registry,
+                registry.clone(),
                 request.request_id,
                 generation,
                 response,
@@ -213,9 +240,52 @@ async fn bidi_handler(
     Extension(proxy): Extension<CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
+    let mut diagnostic = diagnostic("/aiserver.v1.BidiService/BidiAppend");
+    let started = std::time::Instant::now();
+    let result = bidi_inner(&registry, proxy, request, &mut diagnostic).await;
+    if result.is_err() {
+        if let Some(id) = &diagnostic.request_id {
+            registry
+                .reject_unrouted(
+                    id,
+                    "initial BidiAppend rejected; inspect local route diagnostics",
+                )
+                .await;
+        }
+    }
+    if diagnostic.stage != "append" || result.is_err() {
+        finish_diagnostic(
+            &registry,
+            diagnostic,
+            started,
+            result
+                .as_ref()
+                .map(|r| r.status())
+                .unwrap_or_else(|e| e.status_code())
+                .as_u16(),
+        )
+        .await;
+    }
+    result
+}
+
+async fn bidi_inner(
+    registry: &TransportRegistry,
+    proxy: CursorProxy,
+    request: Request<Body>,
+    diagnostic: &mut crate::store::RouteDiagnostic,
+) -> Result<Response<Body>> {
     let (parts, body) = buffered(request).await?;
     let request: ai::BidiAppendRequest = connect::decode_unary(&body)?;
+    diagnostic.request_id = request.request_id.as_ref().map(|id| id.request_id.clone());
     let decoded = bidi::decode(&request)?;
+    diagnostic.conversation_id = decoded.conversation_id().map(str::to_owned);
+    diagnostic.stage = if decoded.model_id().is_some() {
+        "model_route"
+    } else {
+        "append"
+    }
+    .into();
     let first_model = decoded.model_id().map(str::to_owned);
     let conversation_id = decoded.conversation_id().map(str::to_owned);
     let trace_metadata = decoded.trace_metadata();
@@ -268,6 +338,7 @@ async fn bidi_handler(
         trace.resume();
     }
     if !local {
+        diagnostic.route = "cursor_official".into();
         if first_model.is_some() {
             registry.mark_upstream(&decoded.request_id).await;
         }
@@ -281,6 +352,9 @@ async fn bidi_handler(
             Request::from_parts(parts, Body::from(body)),
         )
         .await;
+    }
+    if first_model.is_some() {
+        diagnostic.stage = "parent_metadata".into();
     }
     let parent = match parent_headers(&parts.headers) {
         Ok(parent) => parent,
@@ -298,7 +372,14 @@ async fn bidi_handler(
             return Err(error);
         }
     };
-    match bidi::append(&registry, decoded, parent).await {
+    if let Some(parent) = &parent {
+        diagnostic.parent_request_id = parent.request_id.clone();
+        diagnostic.parent_tool_call_id = parent.tool_call_id.clone();
+    }
+    if first_model.is_some() {
+        diagnostic.stage = "run_admission".into();
+    }
+    match bidi::append(registry, decoded, parent).await {
         Ok(_) => trace.request(
             "bidi_request",
             body,
@@ -356,13 +437,13 @@ fn parent_headers(headers: &HeaderMap) -> Result<Option<TransportParent>> {
     let tool_call_id = header_text(headers, "x-parent-agent-tool-call-id")?;
     match (request_id, tool_call_id) {
         (None, None) => Ok(None),
-        (Some(request_id), Some(tool_call_id)) => Ok(Some(TransportParent {
-            request_id: request_id.into(),
-            tool_call_id: tool_call_id.into(),
+        // Cursor 3.23.12 emits these independently. A tool ID is available even
+        // when the parent's loaded composer has no chatGenerationUUID (and a
+        // background/resumed child can outlive its parent's transport).
+        (request_id, tool_call_id) => Ok(Some(TransportParent {
+            request_id: request_id.map(str::to_owned),
+            tool_call_id: tool_call_id.map(str::to_owned),
         })),
-        _ => Err(crate::Error::Protocol(
-            "Cursor subagent request must include both parent headers".into(),
-        )),
     }
 }
 
@@ -372,4 +453,32 @@ fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>
         .map(|value| value.to_str())
         .transpose()
         .map_err(|error| crate::Error::Protocol(format!("invalid {name} header: {error}")))
+}
+
+fn diagnostic(path: &str) -> crate::store::RouteDiagnostic {
+    crate::store::RouteDiagnostic {
+        method: "POST".into(),
+        path: path.into(),
+        route: "local_byok".into(),
+        stage: "decode".into(),
+        ..Default::default()
+    }
+}
+
+async fn finish_diagnostic(
+    registry: &TransportRegistry,
+    mut diagnostic: crate::store::RouteDiagnostic,
+    started: std::time::Instant,
+    status: u16,
+) {
+    diagnostic.http_status = status;
+    diagnostic.duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+    if registry
+        .store()
+        .record_route_diagnostic(&diagnostic)
+        .await
+        .is_err()
+    {
+        tracing::warn!("could not persist route diagnostic metadata");
+    }
 }

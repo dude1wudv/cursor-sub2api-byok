@@ -634,9 +634,12 @@ fn spawn_run_request(
         let mut checkpoint = CheckpointBuilder::new(
             dependencies.store.clone(),
             blob_sync.clone(),
-            handle.parent().map(|parent| parent.tool_call_id.clone()),
+            handle
+                .parent()
+                .and_then(|parent| parent.tool_call_id.clone()),
             request.conversation_state.clone(),
         );
+        checkpoint.follow_parent(handle.clone());
         let prepared = tokio::select! {
             biased;
             _ = generation.superseded.cancelled() => return,

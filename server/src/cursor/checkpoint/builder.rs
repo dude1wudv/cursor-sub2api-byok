@@ -22,6 +22,7 @@ pub struct CheckpointBuilder {
     pub(super) store: Store,
     pub(super) sync: BlobSynchronizer,
     pub(super) parent_tool_call_id: Option<String>,
+    parent_transport: Option<TransportHandle>,
     pub(super) base: pb::ConversationStateStructure,
     pub(super) model: String,
     pub(super) max_context_tokens: Option<u64>,
@@ -46,6 +47,7 @@ impl CheckpointBuilder {
             store,
             sync,
             parent_tool_call_id,
+            parent_transport: None,
             base: base.unwrap_or_default(),
             model: String::new(),
             max_context_tokens: None,
@@ -58,6 +60,10 @@ impl CheckpointBuilder {
             turn: None,
             turns_initialized: false,
         }
+    }
+
+    pub fn follow_parent(&mut self, handle: TransportHandle) {
+        self.parent_transport = Some(handle);
     }
 
     pub fn configure(
@@ -163,8 +169,13 @@ impl CheckpointBuilder {
         let (todo_ids, plan_id) = self.build_derived_state(messages).await?;
         self.base.todos = todo_ids.iter().map(|id| id.as_bytes().to_vec()).collect();
         self.base.plan = plan_id.as_ref().map(|id| id.as_bytes().to_vec());
-        let communicate_update_states_by_parent_tool_call_id = self
-            .parent_tool_call_id
+        let parent_tool_call_id = self
+            .parent_transport
+            .as_ref()
+            .and_then(|handle| handle.parent())
+            .and_then(|parent| parent.tool_call_id)
+            .or_else(|| self.parent_tool_call_id.clone());
+        let communicate_update_states_by_parent_tool_call_id = parent_tool_call_id
             .as_ref()
             .and_then(|parent| {
                 derived::update_current_step_state(messages).map(|state| (parent.clone(), state))

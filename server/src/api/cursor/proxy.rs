@@ -68,6 +68,8 @@ pub async fn forward(
 async fn forward_request(proxy: &CursorProxy, request: Request<Body>) -> Result<Response<Body>> {
     let started = Instant::now();
     let (parts, body) = request.into_parts();
+    reject_placeholder(&parts.headers)?;
+    let diagnostic_path = parts.uri.path().to_owned();
     let path = parts
         .uri
         .path_and_query()
@@ -94,12 +96,12 @@ async fn forward_request(proxy: &CursorProxy, request: Request<Body>) -> Result<
         Err(error) => {
             tracing::error!(
                 method = %parts.method,
-                path,
+                path = diagnostic_path,
                 elapsed_ms = started.elapsed().as_millis(),
-                %error,
+                error_kind = if error.is_timeout() { "timeout" } else { "connection" },
                 "Cursor upstream request failed"
             );
-            return Err(error.into());
+            return Err(error.without_url().into());
         }
     };
 
@@ -112,11 +114,29 @@ async fn forward_request(proxy: &CursorProxy, request: Request<Body>) -> Result<
 
     tracing::info!(
         method = %parts.method,
-        path,
+        path = diagnostic_path,
         %status,
         elapsed_ms = started.elapsed().as_millis(),
         "forwarded Cursor backend request"
     );
+    let diagnostic = crate::store::RouteDiagnostic {
+        method: parts.method.to_string(),
+        path: diagnostic_path,
+        route: "cursor_official".into(),
+        stage: "official_response_headers".into(),
+        http_status: status.as_u16(),
+        duration_ms: started.elapsed().as_millis() as i64,
+        ..Default::default()
+    };
+    if proxy
+        .clients
+        .store()
+        .record_route_diagnostic(&diagnostic)
+        .await
+        .is_err()
+    {
+        tracing::warn!("could not persist official response metadata");
+    }
     Ok(response)
 }
 
@@ -125,6 +145,7 @@ pub async fn forward_buffered(
     request: Request<Body>,
 ) -> Result<BufferedResponse> {
     let (parts, body) = request.into_parts();
+    reject_placeholder(&parts.headers)?;
     let path = parts
         .uri
         .path_and_query()
@@ -163,6 +184,23 @@ pub async fn forward_buffered(
         headers,
         body,
     })
+}
+
+fn reject_placeholder(headers: &axum::http::HeaderMap) -> Result<()> {
+    if headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(' '))
+        .is_some_and(|(scheme, token)| {
+            scheme.eq_ignore_ascii_case("bearer")
+                && crate::local_app::account::is_placeholder_token(token.trim())
+        })
+    {
+        return Err(crate::Error::Config(
+            "本地占位凭据不能发送到 Cursor 官方服务；请在 Cursor 正常登录".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn upstream_url(headers: &axum::http::HeaderMap, fallback: &str, path: &str) -> Result<String> {

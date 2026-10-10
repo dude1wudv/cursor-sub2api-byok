@@ -71,8 +71,8 @@ pub async fn test(
 
 pub async fn cancel(
     State(service): State<ControlService>,
-    Path((_model_hash, test_id)): Path<(String, String)>,
+    Path((model_hash, test_id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    service.cancel_model_test(&test_id);
+    service.cancel_model_test(&model_hash, &test_id)?;
     Ok(StatusCode::NO_CONTENT)
 }

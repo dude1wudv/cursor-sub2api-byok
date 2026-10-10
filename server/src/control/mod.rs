@@ -1,10 +1,12 @@
 //! Exposes the local control API.
 pub mod auth;
 mod calls;
+mod discovery;
 mod harness;
 mod models;
-mod discovery;
+mod network;
 mod overview;
+mod pricing;
 mod service;
 
 use axum::{
@@ -123,7 +125,24 @@ pub fn api_router(service: ControlService) -> Router {
         )
         .route("/__byok-api__/api/sub2api/models", get(discovery::list))
         .route("/__byok-api__/api/overview", get(overview::get))
+        .route(
+            "/__byok-api__/api/pricing",
+            get(pricing::get).put(pricing::put),
+        )
+        .route("/__byok-api__/api/pricing/estimate", get(pricing::estimate))
+        .route("/__byok-api__/api/network", get(network::get))
+        .route("/__byok-api__/api/network/ports", put(network::ports))
+        .route("/__byok-api__/api/network/proxy", put(network::proxy))
+        .route("/__byok-api__/api/network/test", post(network::test))
+        .route(
+            "/__byok-api__/api/harness/cursor/subscription",
+            put(harness::subscription),
+        )
         .route("/__byok-api__/api/llm-calls", get(calls::list))
+        .route(
+            "/__byok-api__/api/route-diagnostics",
+            get(calls::diagnostics),
+        )
         .route("/__byok-api__/api/llm-calls/{call_id}", get(calls::detail))
         .route(
             "/__byok-api__/api/harness/cursor/status",
@@ -133,8 +152,14 @@ pub fn api_router(service: ControlService) -> Router {
             "/__byok-api__/api/harness/cursor/ca/initialize",
             post(harness::initialize_ca),
         )
-        .route("/__byok-api__/api/harness/cursor/ca/consent", post(harness::consent))
-        .route("/__byok-api__/api/harness/cursor/ca/uninstall", post(harness::uninstall_certificate))
+        .route(
+            "/__byok-api__/api/harness/cursor/ca/consent",
+            post(harness::consent),
+        )
+        .route(
+            "/__byok-api__/api/harness/cursor/ca/uninstall",
+            post(harness::uninstall_certificate),
+        )
         .route(
             "/__byok-api__/api/harness/cursor/enabled",
             put(harness::set_enabled),

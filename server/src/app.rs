@@ -58,7 +58,7 @@ impl App {
         );
         let control = control::ControlService::new(store.clone(), provider, &config.runtime_paths)?;
         let harness = control.cursor_harness().clone();
-        let mut router = api::router(registry.clone(), clients)?;
+        let mut router = api::router(registry.clone(), clients.clone())?;
         router = match &config.console {
             Some(ConsoleSource::Directory(directory)) => {
                 router.merge(control::web_router(control.clone(), directory))
@@ -69,7 +69,7 @@ impl App {
             None => router.merge(control::api_router(control.clone())),
         };
         Ok(Self {
-            router,
+            router: router.layer(axum::Extension(clients)),
             registry,
             harness,
             store,
@@ -89,12 +89,7 @@ impl App {
 
     pub async fn bind(&self) -> Result<TcpListener> {
         let requested = self.config.listen_addr;
-        let listener = bind_service_listener(requested, self.config.use_persisted_ports).await?;
-        if self.config.use_persisted_ports {
-            self.store
-                .set_service_port(listener.local_addr()?.port())
-                .await?;
-        }
+        let listener = bind_service_listener(requested).await?;
         self.auth.bind(listener.local_addr()?);
         Ok(listener)
     }
@@ -166,18 +161,13 @@ impl App {
     }
 }
 
-async fn bind_service_listener(
-    requested: SocketAddr,
-    allow_random_fallback: bool,
-) -> Result<TcpListener> {
-    match TcpListener::bind(requested).await {
-        Ok(listener) => Ok(listener),
-        Err(error) if allow_random_fallback && requested.port() != 0 => {
-            tracing::warn!(%requested, %error, "configured service port unavailable; selecting a random port");
-            Ok(TcpListener::bind(SocketAddr::new(requested.ip(), 0)).await?)
-        }
-        Err(error) => Err(error.into()),
-    }
+async fn bind_service_listener(requested: SocketAddr) -> Result<TcpListener> {
+    TcpListener::bind(requested).await.map_err(|_| {
+        crate::Error::Config(format!(
+            "管理端口 {} 已被占用或不可用；请释放端口后重试",
+            requested.port()
+        ))
+    })
 }
 
 async fn shutdown_signal() {

@@ -43,9 +43,9 @@ pub enum Error {
     ControllerConflict { code: &'static str, message: String },
 }
 
-impl IntoResponse for Error {
-    fn into_response(self) -> Response {
-        let status = match &self {
+impl Error {
+    pub fn status_code(&self) -> StatusCode {
+        match self {
             Self::ControllerConflict { .. } => StatusCode::CONFLICT,
             Self::Config(_) | Self::Protocol(_) | Self::Decode(_) | Self::Json(_) => {
                 StatusCode::BAD_REQUEST
@@ -59,7 +59,12 @@ impl IntoResponse for Error {
             | Self::MigrationTimeout { .. }
             | Self::Encode(_)
             | Self::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        };
+        }
+    }
+}
+impl IntoResponse for Error {
+    fn into_response(self) -> Response {
+        let status = self.status_code();
         tracing::warn!(%status, error = %self, "request failed");
         let code = match &self {
             Self::ControllerConflict { code, .. } => *code,

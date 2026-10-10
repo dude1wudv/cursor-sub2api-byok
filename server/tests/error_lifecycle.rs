@@ -601,10 +601,23 @@ async fn parent_request_does_not_need_to_resolve_to_an_active_run() {
     assert_run_starts_without_parent_dependency(
         "finished-parent-request",
         Some(TransportParent {
-            request_id: "already-finished-parent".into(),
-            tool_call_id: "original-tool-call".into(),
+            request_id: Some("already-finished-parent".into()),
+            tool_call_id: Some("original-tool-call".into()),
         }),
         None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn actual_http_initial_subagent_with_only_task_header_runs_to_completion() {
+    assert_run_starts_without_parent_dependency(
+        "http-child",
+        Some(TransportParent {
+            request_id: None,
+            tool_call_id: Some("task-http".into()),
+        }),
+        Some("explore"),
     )
     .await;
 }
@@ -647,24 +660,82 @@ async fn assert_run_starts_without_parent_dependency(
         PromptCompiler::new(assets),
     );
     let handle = registry.get_or_create(request_id).await.unwrap();
-    if let Some(parent) = parent {
-        handle.set_parent(parent).unwrap();
+    let http_parent = if request_id == "http-child" {
+        parent.clone()
+    } else {
+        None
+    };
+    if http_parent.is_none() {
+        if let Some(parent) = parent {
+            handle.set_parent(parent).unwrap();
+        }
     }
     let mut output = handle.subscribe();
-    let mut message = protocol_client_run("continue", "independent-user");
+    // Agent-host's initial child action omits message_id (Cursor 3.23.12).
+    let mut message = protocol_client_run(
+        "continue",
+        if request_id == "http-child" {
+            ""
+        } else {
+            "independent-user"
+        },
+    );
     let Some(pb::agent_client_message::Message::RunRequest(request)) = message.message.as_mut()
     else {
         unreachable!()
     };
     request.conversation_id = Some(format!("{request_id}-conversation"));
     request.subagent_type_name = subagent_type_name.map(str::to_owned);
-    handle
-        .command(TransportCommand::Append {
-            seqno: 0,
-            message: Box::new(message),
-        })
-        .await
+    if let Some(parent) = http_parent {
+        use tower::ServiceExt;
+        // Use a local model ID without a real provider: the fixture owns execution.
+        request.requested_model.as_mut().unwrap().model_id = "plugin:synthetic/child/model".into();
+        let app = cursor_server::api::cursor::router(
+            registry.clone(),
+            cursor_server::network::NetworkClients::new(store.clone()),
+        )
         .unwrap();
+        let wire = ai::BidiAppendRequest {
+            request_id: Some(ai::BidiRequestId {
+                request_id: request_id.into(),
+            }),
+            data: hex::encode(message.encode_to_vec()),
+            ..Default::default()
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/aiserver.v1.BidiService/BidiAppend")
+                    .header("x-parent-agent-tool-call-id", parent.tool_call_id.unwrap())
+                    .body(axum::body::Body::from(wire.encode_to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            handle.parent().unwrap().tool_call_id.as_deref(),
+            Some("task-http")
+        );
+        // Same sequence must not start another provider execution.
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/aiserver.v1.BidiService/BidiAppend")
+                    .body(axum::body::Body::from(wire.encode_to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    } else {
+        handle
+            .command(TransportCommand::Append {
+                seqno: 0,
+                message: Box::new(message),
+            })
+            .await
+            .unwrap();
+    }
 
     let mut seqno = 1;
     let terminal_json = loop {
@@ -691,6 +762,44 @@ async fn assert_run_starts_without_parent_dependency(
 
     assert!(terminal_json.get("error").is_none(), "{terminal_json}");
     assert_eq!(provider.requests().len(), 1);
+    if request_id == "http-child" {
+        use tower::ServiceExt;
+        // Delayed replay after terminal output must not start a second child.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while registry.local(request_id).await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut replay = protocol_client_run("continue", "independent-user");
+        if let Some(pb::agent_client_message::Message::RunRequest(run)) = replay.message.as_mut() {
+            run.requested_model.as_mut().unwrap().model_id = "plugin:synthetic/child/model".into();
+        }
+        let wire = ai::BidiAppendRequest {
+            request_id: Some(ai::BidiRequestId {
+                request_id: request_id.into(),
+            }),
+            data: hex::encode(replay.encode_to_vec()),
+            ..Default::default()
+        };
+        let app = cursor_server::api::cursor::router(
+            registry.clone(),
+            cursor_server::network::NetworkClients::new(store.clone()),
+        )
+        .unwrap();
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/aiserver.v1.BidiService/BidiAppend")
+                    .body(axum::body::Body::from(wire.encode_to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        assert_eq!(provider.requests().len(), 1);
+        assert!(registry.local(request_id).await.is_none());
+    }
     let row: (String, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT run_kind, parent_run_id, parent_tool_call_id FROM runs WHERE cursor_request_id = ?",
     )
@@ -772,4 +881,76 @@ fn kv_ack(id: u32) -> pb::AgentClientMessage {
             },
         )),
     }
+}
+
+#[tokio::test]
+async fn cancelled_child_replay_cannot_execute_again_even_after_registry_restart() {
+    use tower::ServiceExt;
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    provider.push_pending();
+    let assets =
+        PromptAssets::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("prompt/cursor"))
+            .unwrap();
+    let compiler = PromptCompiler::new(assets);
+    let registry =
+        TransportRegistry::new(store.clone(), Arc::new(provider.clone()), compiler.clone());
+    let handle = registry.get_or_create("cancelled-child").await.unwrap();
+    let mut output = handle.subscribe();
+    let mut message = protocol_client_run("synthetic pending request", "cancelled-user");
+    handle
+        .command(TransportCommand::Append {
+            seqno: 0,
+            message: Box::new(message.clone()),
+        })
+        .await
+        .unwrap();
+    let mut seqno = 1;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            tokio::select! {
+                frame = output.recv() => {
+                    let frame=frame.unwrap();
+                    for (flags,payload) in connect::decode_frames(&frame).unwrap() {
+                        assert_eq!(flags & connect::END_STREAM_FLAG, 0);
+                        if let Some(pb::agent_server_message::Message::KvServerMessage(kv))=pb::AgentServerMessage::decode(payload).unwrap().message {
+                            handle.command(TransportCommand::Append {seqno,message:Box::new(kv_ack(kv.id))}).await.unwrap(); seqno+=1;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                    if !provider.requests().is_empty() { break; }
+                }
+            }
+        }
+    }).await.unwrap();
+    handle.disconnect().await;
+    registry.shutdown().await;
+    let registry = TransportRegistry::new(store.clone(), Arc::new(provider.clone()), compiler);
+    if let Some(pb::agent_client_message::Message::RunRequest(run)) = message.message.as_mut() {
+        run.requested_model.as_mut().unwrap().model_id = "plugin:synthetic/child/model".into();
+    }
+    let wire = ai::BidiAppendRequest {
+        request_id: Some(ai::BidiRequestId {
+            request_id: "cancelled-child".into(),
+        }),
+        data: hex::encode(message.encode_to_vec()),
+        ..Default::default()
+    };
+    let app = cursor_server::api::cursor::router(
+        registry.clone(),
+        cursor_server::network::NetworkClients::new(store),
+    )
+    .unwrap();
+    let response = app
+        .oneshot(
+            axum::http::Request::post("/aiserver.v1.BidiService/BidiAppend")
+                .body(axum::body::Body::from(wire.encode_to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+    assert_eq!(provider.requests().len(), 1);
+    assert!(registry.local("cancelled-child").await.is_none());
 }

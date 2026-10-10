@@ -46,6 +46,7 @@ pub struct ExecContext {
     pub default_subagent_parameters: Vec<pb::requested_model::ModelParameterValue>,
     pub subagent_models: HashMap<String, SubagentModel>,
     pub selected_subagent_models: HashMap<String, pb::RequestedModel>,
+    pub byok_model_aliases: HashMap<String, Option<String>>,
     pub allow_subagents: bool,
     pub terminals_folder: String,
     pub admin_command_denylist: Vec<String>,
@@ -62,7 +63,10 @@ pub struct McpRoute {
 
 #[derive(Clone, Debug)]
 pub enum SubagentModel {
+    /// An exact routing ID supplied by Cursor's native model selection.
     Model(pb::RequestedModel),
+    /// A name from a custom agent file; resolve configured BYOK aliases first.
+    NamedModel(pb::RequestedModel),
     Disabled,
 }
 
@@ -93,7 +97,16 @@ impl ExecContext {
             .get("model")
             .and_then(serde_json::Value::as_str)
             .filter(|model| !matches!(*model, "inherit" | "default" | ""));
-        let selected = explicit.map(|id| SubagentModel::Model(self.selected_model(id)));
+        let selected = explicit.map(|id| {
+            if let Some(SubagentModel::Model(model)) = self.subagent_models.get(subagent_type)
+                .filter(|selection| matches!(selection, SubagentModel::Model(model) if model.model_id == id)) {
+                SubagentModel::Model(model.clone())
+            } else if self.selected_subagent_models.contains_key(id) || id == self.default_subagent_model {
+                SubagentModel::Model(self.selected_model(id))
+            } else {
+                SubagentModel::NamedModel(self.selected_model(id))
+            }
+        });
         // Native Cursor preserves the existing child model on resume when sent
         // the parent's model. A newly configured type default must not replace it.
         let resume = arguments
@@ -103,14 +116,36 @@ impl ExecContext {
         let default = (!resume)
             .then(|| self.subagent_models.get(subagent_type))
             .flatten();
-        let (model, parameters) = match selected.as_ref().or(default) {
-            Some(SubagentModel::Model(model)) => (model.model_id.clone(), model.parameters.clone()),
+        let (mut model, mut parameters, resolve_name) = match selected.as_ref().or(default) {
+            Some(SubagentModel::Model(model)) => {
+                (model.model_id.clone(), model.parameters.clone(), false)
+            }
+            Some(SubagentModel::NamedModel(model)) => {
+                (model.model_id.clone(), model.parameters.clone(), true)
+            }
             Some(SubagentModel::Disabled) => unreachable!("disabled Task returned above"),
             None => (
                 self.default_subagent_model.clone(),
                 self.default_subagent_parameters.clone(),
+                false,
             ),
         };
+        if let Some(route) = resolve_name
+            .then(|| self.byok_model_aliases.get(&model))
+            .flatten()
+        {
+            model = route.clone().ok_or_else(|| {
+                Error::Protocol(
+                    "Task model name is ambiguous; choose an exact model routing ID".into(),
+                )
+            })?;
+            if parameters.is_empty() {
+                parameters = self.selected_model(&model).parameters;
+            }
+        }
+        if parameters.is_empty() && model == self.default_subagent_model {
+            parameters = self.default_subagent_parameters.clone();
+        }
         if model.is_empty() {
             return Err(Error::Protocol(format!(
                 "Task subagent type {subagent_type} has no model"

@@ -1,4 +1,5 @@
 //! Reversible, serialized Cursor takeover. All persisted secrets use CurrentUser DPAPI.
+pub mod account;
 mod atomic_file;
 mod ca;
 pub mod instance;
@@ -54,6 +55,8 @@ pub struct CursorHarnessStatus {
     pub restart_required: bool,
     pub recovery_error: Option<String>,
     pub warnings: Vec<String>,
+    pub subscription_injected: bool,
+    pub subscription_recovery_pending: bool,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +71,8 @@ struct Inner {
     store: Store,
     settings_path: PathBuf,
     journal_path: PathBuf,
+    subscription_journal: PathBuf,
+    subscription_active: RwLock<bool>,
     ca: CaManager,
     transition: Mutex<()>,
     backend_addr: RwLock<Option<SocketAddr>>,
@@ -111,6 +116,15 @@ fn restore_ca(record: &journal::Record) -> Result<()> {
 
 /// Offline recovery entry point; it constructs no database, HTTP client or proxy.
 pub async fn restore_paths(paths: &crate::config::RuntimePaths) -> Result<()> {
+    let subscription_journal = paths.data_dir.join("subscription.dpapi");
+    if account::pending(&subscription_journal)? {
+        require_cursor_closed().await?;
+        account::restore(
+            &subscription_database(&paths.cursor_settings)?,
+            &subscription_journal,
+        )
+        .await?;
+    }
     let path = journal::path(&paths.data_dir);
     let Some(mut record) = journal::read(&path)? else {
         return Ok(());
@@ -124,7 +138,18 @@ pub async fn restore_paths(paths: &crate::config::RuntimePaths) -> Result<()> {
     journal::remove(&path)
 }
 
+fn subscription_database(settings: &Path) -> Result<PathBuf> {
+    Ok(settings
+        .parent()
+        .ok_or_else(|| Error::Config("Cursor profile path is invalid".into()))?
+        .join("globalStorage")
+        .join("state.vscdb"))
+}
+
 impl CursorHarness {
+    pub fn backend_addr(&self) -> Option<SocketAddr> {
+        *self.inner.backend_addr.read()
+    }
     async fn cursor_running(&self) -> Result<bool> {
         #[cfg(test)]
         if let Some(value) = *self.inner.cursor_running_override.read() {
@@ -148,6 +173,8 @@ impl CursorHarness {
                 store,
                 settings_path,
                 journal_path: journal::path(&data_dir),
+                subscription_journal: data_dir.join("subscription.dpapi"),
+                subscription_active: RwLock::new(false),
                 ca: CaManager::at(&data_dir)?,
                 transition: Mutex::new(()),
                 backend_addr: RwLock::new(None),
@@ -167,6 +194,8 @@ impl CursorHarness {
     }
 
     pub async fn status(&self) -> Result<CursorHarnessStatus> {
+        let subscription_pending = account::pending(&self.inner.subscription_journal);
+        let subscription_active = *self.inner.subscription_active.read();
         let configured_models = self.inner.store.models().await?.len();
         let pending = journal::read(&self.inner.journal_path);
         let proxy = self.inner.proxy.lock().await;
@@ -186,6 +215,13 @@ impl CursorHarness {
             .recovery_error
             .read()
             .clone()
+            .or_else(|| match &subscription_pending {
+                Err(_) => Some("订阅恢复 journal 无法读取，已保留；请重试恢复。".into()),
+                Ok(true) if !subscription_active => {
+                    Some("发现未完成的订阅缓存恢复，请完全退出 Cursor 后恢复。".into())
+                }
+                _ => None,
+            })
             .or_else(|| {
                 pending
                     .as_ref()
@@ -229,6 +265,8 @@ impl CursorHarness {
             restart_required: self.cursor_running().await?,
             recovery_error,
             warnings: self.inner.warnings.read().clone(),
+            subscription_injected: subscription_active,
+            subscription_recovery_pending: subscription_pending.unwrap_or(true),
         })
     }
 
@@ -253,8 +291,14 @@ impl CursorHarness {
         self.status().await
     }
 
-    pub async fn accept_certificate(&self, accepted: bool, version: u32) -> Result<CursorHarnessStatus> {
-        if !accepted || version != 1 { return Err(Error::Config("请阅读并同意当前版本的证书使用说明".into())); }
+    pub async fn accept_certificate(
+        &self,
+        accepted: bool,
+        version: u32,
+    ) -> Result<CursorHarnessStatus> {
+        if !accepted || version != 1 {
+            return Err(Error::Config("请阅读并同意当前版本的证书使用说明".into()));
+        }
         let _guard = self.configuration_guard().await?;
         self.require_cursor_closed().await?;
         self.inner.ca.accept_persistent_trust()?;
@@ -271,6 +315,41 @@ impl CursorHarness {
     pub async fn recover_pending(&self) -> Result<()> {
         let _guard = self.inner.transition.lock().await;
         self.restore_transaction().await
+    }
+    /// Explicit per-session opt-in; never changes login credentials or server responses.
+    pub async fn set_subscription(
+        &self,
+        enabled: bool,
+        consent: bool,
+    ) -> Result<CursorHarnessStatus> {
+        let _guard = self.inner.transition.lock().await;
+        self.require_cursor_closed().await?;
+        if enabled {
+            account::inject(
+                &subscription_database(&self.inner.settings_path)?,
+                &self.inner.subscription_journal,
+                consent,
+            )
+            .await?;
+            *self.inner.subscription_active.write() = true;
+        } else {
+            self.restore_subscription().await?;
+        }
+        self.status().await
+    }
+
+    async fn restore_subscription(&self) -> Result<()> {
+        if account::pending(&self.inner.subscription_journal)? {
+            self.require_cursor_closed().await?;
+            let outcome = account::restore(
+                &subscription_database(&self.inner.settings_path)?,
+                &self.inner.subscription_journal,
+            )
+            .await?;
+            self.inner.warnings.write().extend(outcome.preserved_fields);
+        }
+        *self.inner.subscription_active.write() = false;
+        Ok(())
     }
     pub async fn set_enabled(&self, enabled: bool) -> Result<CursorHarnessStatus> {
         let _guard = self.inner.transition.lock().await;
@@ -308,7 +387,10 @@ impl CursorHarness {
             ));
         }
         if !self.inner.ca.consent_accepted()? {
-            return Err(conflict("CERTIFICATE_CONSENT_REQUIRED", "请先阅读并同意证书使用说明，完成一次性证书安装。"));
+            return Err(conflict(
+                "CERTIFICATE_CONSENT_REQUIRED",
+                "请先阅读并同意证书使用说明，完成一次性证书安装。",
+            ));
         }
         let backend = self
             .inner
@@ -330,7 +412,7 @@ impl CursorHarness {
             journal::write(&self.inner.journal_path, &record)?;
             let ca = self.inner.ca.load()?;
             let port = self.inner.store.port_settings().await?.proxy_port;
-            let (url, port) = self
+            let (url, _port) = self
                 .inner
                 .proxy
                 .lock()
@@ -343,7 +425,6 @@ impl CursorHarness {
             patch.apply()?;
             record.stage = journal::Stage::SettingsApplied;
             journal::write(&self.inner.journal_path, &record)?;
-            self.inner.store.set_proxy_port(port).await?;
             self.inner.store.set_cursor_takeover_enabled(true).await?;
             record.stage = journal::Stage::Active;
             journal::write(&self.inner.journal_path, &record)?;
@@ -366,6 +447,7 @@ impl CursorHarness {
 
     async fn restore_transaction(&self) -> Result<()> {
         let result: Result<()> = async {
+            self.restore_subscription().await?;
             let Some(mut record) = journal::read(&self.inner.journal_path)? else {
                 if self.inner.proxy.lock().await.running() {
                     return Err(conflict(
@@ -383,7 +465,7 @@ impl CursorHarness {
             if let settings::RestoreOutcome::RestoredWithUserChanges(keys) =
                 journal::restore(&record)?
             {
-                *self.inner.warnings.write() = keys;
+                self.inner.warnings.write().extend(keys);
             }
             self.inner.proxy.lock().await.stop().await;
             restore_ca(&record)?;

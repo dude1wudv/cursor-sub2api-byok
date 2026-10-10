@@ -5,6 +5,32 @@ use crate::{
 };
 use serde_json::json;
 
+/// Convert unique configured names to BYOK routing IDs before emitting SubagentArgs.
+/// An exact native model selection wins over an alias; collisions require an ID.
+pub(super) fn configure_model_aliases(
+    context: &mut crate::cursor::tools::runtime::ExecContext,
+    models: &[ModelConfig],
+) {
+    for model in models {
+        for alias in [&model.model_id, &model.display_name] {
+            if context.selected_subagent_models.contains_key(alias)
+                || models.iter().any(|m| &m.model_hash == alias)
+            {
+                continue;
+            }
+            context
+                .byok_model_aliases
+                .entry(alias.clone())
+                .and_modify(|value| {
+                    if value.as_deref() != Some(model.model_hash.as_str()) {
+                        *value = None;
+                    }
+                })
+                .or_insert_with(|| Some(model.model_hash.clone()));
+        }
+    }
+}
+
 pub(super) fn configure_tools(
     prompt: &mut PromptSpec,
     request: &pb::AgentRunRequest,
@@ -74,6 +100,51 @@ mod tests {
         cursor::prompting::{Mode, PromptAssets, PromptCompiler},
         model::ModelSpec,
     };
+
+    #[tokio::test]
+    async fn aliases_require_unique_names_and_preserve_exact_native_selections() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::connect(&format!(
+            "sqlite://{}",
+            dir.path().join("aliases.db").display()
+        ))
+        .await
+        .unwrap();
+        let input = serde_json::from_value(json!({
+            "display_name":"GLM", "type":"openai", "base_url":"https://synthetic.example/v1",
+            "api_key":"synthetic", "tooltip_data":"Synthetic model", "model_id":"z-ai/glm-5.3-flash"
+        }))
+        .unwrap();
+        let model = store.create_model(&input).await.unwrap();
+        let mut context = crate::cursor::tools::runtime::ExecContext::default();
+        configure_model_aliases(&mut context, std::slice::from_ref(&model));
+        assert_eq!(
+            context.byok_model_aliases["GLM"].as_deref(),
+            Some(model.model_hash.as_str())
+        );
+        assert_eq!(
+            context.byok_model_aliases["z-ai/glm-5.3-flash"].as_deref(),
+            Some(model.model_hash.as_str())
+        );
+        let mut duplicate = model.clone();
+        duplicate.model_hash = "another-route".into();
+        duplicate.display_name = "Alternative".into();
+        context.byok_model_aliases.clear();
+        context.selected_subagent_models.insert(
+            "GLM".into(),
+            pb::RequestedModel {
+                model_id: "GLM".into(),
+                ..Default::default()
+            },
+        );
+        configure_model_aliases(&mut context, &[model, duplicate]);
+        assert_eq!(context.byok_model_aliases["z-ai/glm-5.3-flash"], None);
+        assert!(!context.byok_model_aliases.contains_key("GLM"));
+        assert_eq!(
+            context.byok_model_aliases["Alternative"].as_deref(),
+            Some("another-route")
+        );
+    }
 
     #[test]
     fn custom_types_extend_native_schema_and_disabled_types_do_not_hide_other_tasks() {

@@ -11,6 +11,7 @@ export function ModelEditor({ model, cancel, save }: { model: Model | "new"; can
   const [effort, setEffort] = useState(old ? defaultEffort(old) ?? "" : "");
   const [context, setContext] = useState(old?.context_window_tokens?.toString() ?? "");
   const [maxTokens, setMaxTokens] = useState(old?.max_completion_tokens?.toString() ?? "");
+  const [group, setGroup] = useState(old?.group_name ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const toggle = (value: string) => {
@@ -20,7 +21,7 @@ export function ModelEditor({ model, cancel, save }: { model: Model | "new"; can
   return <div className="overlay"><form className="dialog" role="dialog" aria-modal="true" aria-labelledby="editor-title" onSubmit={async e => {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      await save({ display_name: name, model_id: id, type, openai_endpoint: endpoint, reasoning_effort: effort || null, allowed_reasoning_efforts: allowed, context_window_tokens: context ? Number(context) : null, max_completion_tokens: maxTokens ? Number(maxTokens) : null, thinking_budget_tokens: old?.thinking_budget_tokens ?? null });
+      await save({ display_name: name, model_id: id, type, sort_order: old?.sort_order ?? 0, group_name: group.trim() || null, openai_endpoint: endpoint, reasoning_effort: effort || null, allowed_reasoning_efforts: allowed, context_window_tokens: context ? Number(context) : null, max_completion_tokens: maxTokens ? Number(maxTokens) : null, thinking_budget_tokens: old?.thinking_budget_tokens ?? null });
     } catch (e) { setError(e instanceof Error ? e.message : "保存失败"); }
     finally { setBusy(false); }
   }}>
@@ -28,6 +29,7 @@ export function ModelEditor({ model, cancel, save }: { model: Model | "new"; can
     {error && <div className="alert error" role="alert">{error}</div>}
     <fieldset disabled={busy}>
       <div className="fields"><label>显示名称<input autoFocus required value={name} onChange={e => setName(e.target.value)} /></label><label>模型 ID<input required value={id} onChange={e => setId(e.target.value)} placeholder="与 Sub2API 模型 ID 一致" /></label></div>
+      <label>分组<input maxLength={80} value={group} onChange={e => setGroup(e.target.value)} placeholder="例如：日常开发；留空为未分组" /></label>
       <div className="fields"><label>协议<select value={type} onChange={e => setType(e.target.value as Model["type"])}><option value="openai">OpenAI / GPT</option><option value="anthropic">Anthropic / Claude</option></select></label><label>Endpoint<select disabled={type === "anthropic"} value={type === "anthropic" ? "/v1/messages" : endpoint} onChange={e => setEndpoint(e.target.value)}>{type === "anthropic" ? <option value="/v1/messages">Messages</option> : <><option value="/v1/responses">Responses</option><option value="/v1/chat/completions">Chat Completions</option></>}</select></label></div>
       <div className="effort-section"><div className="section-heading"><h3>推理强度</h3><span>在 Cursor 中切换</span></div><span className="field-caption">可选强度</span><div className="effort-options">{efforts.map(value => <label className={`check-chip ${allowed.includes(value) ? "selected" : ""}`} key={value}><input type="checkbox" checked={allowed.includes(value)} onChange={() => toggle(value)} />{value}</label>)}</div>
         <label>默认强度<select aria-label="默认强度" value={effort} onChange={e => setEffort(e.target.value)}><option value="">模型默认（不指定强度）</option>{efforts.filter(v => allowed.includes(v)).map(value => <option key={value}>{value}</option>)}</select></label>

@@ -32,7 +32,7 @@ async fn registry() -> (tempfile::TempDir, TransportRegistry) {
 }
 
 #[tokio::test]
-async fn actor_exit_removes_the_matching_transport_and_allows_a_new_generation() {
+async fn actor_exit_rejects_old_attempt_and_allows_a_new_generation_id() {
     let (_directory, registry) = registry().await;
     let first = registry.get_or_create("lifecycle-request").await.unwrap();
     assert!(registry.local("lifecycle-request").await.is_some());
@@ -49,9 +49,10 @@ async fn actor_exit_removes_the_matching_transport_and_allows_a_new_generation()
     .await
     .unwrap();
 
-    let second = registry.get_or_create("lifecycle-request").await.unwrap();
-    assert_eq!(second.request_id(), "lifecycle-request");
-    assert!(registry.local("lifecycle-request").await.is_some());
+    assert!(registry.get_or_create("lifecycle-request").await.is_err());
+    let second = registry.get_or_create("next-attempt").await.unwrap();
+    assert_eq!(second.request_id(), "next-attempt");
+    assert!(registry.local("next-attempt").await.is_some());
     second.command(TransportCommand::Disconnect).await.unwrap();
 }
 

@@ -16,6 +16,7 @@ node_modules
 *.tsbuildinfo
 cursor-server.tar
 /target/
+/tmp/
 /server/target/
 /apps/desktop/src-tauri/gen/
 /.tauri/

@@ -100,7 +100,7 @@ fn canonical_target(path: &std::path::Path) -> Result<PathBuf> {
     })
 }
 
-fn validate_path(path: &std::path::Path, label: &str, directory: bool) -> Result<()> {
+pub(crate) fn validate_path(path: &std::path::Path, label: &str, directory: bool) -> Result<()> {
     if !path.is_absolute() {
         return Err(Error::Config(format!("{label} must be an absolute path")));
     }
@@ -301,9 +301,15 @@ mod tests {
         let settings = cursor.join("User/settings.json");
         fs::write(&settings, "{}").unwrap();
         let paths = RuntimePaths::resolve(Some(data.clone()), Some(cursor)).unwrap();
-        assert_eq!(fs::canonicalize(&paths.cursor_settings).unwrap(), fs::canonicalize(&settings).unwrap());
+        assert_eq!(
+            fs::canonicalize(&paths.cursor_settings).unwrap(),
+            fs::canonicalize(&settings).unwrap()
+        );
         assert_eq!(paths.data_dir.file_name(), data.file_name());
-        assert_eq!(fs::canonicalize(paths.data_dir.parent().unwrap()).unwrap(), fs::canonicalize(data.parent().unwrap()).unwrap());
+        assert_eq!(
+            fs::canonicalize(paths.data_dir.parent().unwrap()).unwrap(),
+            fs::canonicalize(data.parent().unwrap()).unwrap()
+        );
         assert_eq!(fs::read_to_string(settings).unwrap(), "{}");
     }
 
