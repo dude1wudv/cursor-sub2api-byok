@@ -1,4 +1,5 @@
 # Cursor Sub2API BYOK
+## 👋Is Cursor getting too heavy?  ✨ **New from the same author** → [BaoCode](https://github.com/baocode-dev/baocode) — an awesome desktop GUI for Claude Code: polished, ultra-small, ultra-light.
 
 Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab](https://microedulab.com/)** 开发与维护。
 
