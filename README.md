@@ -7,6 +7,8 @@ Windows x64 便携控制器，只负责 Cursor → Sub2API。由 **[MicroEduLab]
 
 基于 [leookun/cursor-byok](https://github.com/leookun/cursor-byok) 固定提交 `7ee68c2b7fef66a0e0279273d037d23fbc2f11ad`，保留上游 Git 历史、原 MIT LICENSE 和版权。本项目独立维护，不隶属于 Cursor。
 
+本 fork 当前维护的版本为 **v0.3.0-rc.2 预发布**，以本项目 [Release 页面](https://github.com/dude1wudv/cursor-sub2api-byok/releases) 和[验证范围](docs/VALIDATION.md)为准；上游项目版本不等于本 fork 的正式发行版本。真实 GPT/Claude/MCP 闭环与活跃重连仍待验收，原生子代理单独取消存在已知限制。
+
 ## 下载与要求
 
 从 Release 下载 `Cursor-Sub2API-BYOK-windows-x64.zip`，解压后运行 EXE。包内含原 LICENSE、THIRD-PARTY-NOTICES.txt 和 SHA256SUMS.txt；Release 另提供完整资产校验和。
